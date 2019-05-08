@@ -427,7 +427,7 @@ def log_SNR(optimizer: optim.Optimizer, event_writer: SummaryWriter, token_count
 ###############################################################################
 
 
-def evaluate_and_log(eval_iter, split, train_step=-1):
+def evaluate_and_log(optimizer, eval_iter, split, train_step=-1):
     global best_val_loss
     eval_start_time = time.time()
 
@@ -592,7 +592,7 @@ def train(va_iter, optimizer, scheduler):
             last_log_step = train_step
 
         if train_step % args.eval_interval == 0:
-            evaluate_and_log(va_iter, 'val', train_step)
+            evaluate_and_log(optimizer, va_iter, 'val', train_step)
 
         if global_token_count >= args.max_tokens:
             logger.info('End of schedule, staying at current LR')
@@ -727,7 +727,7 @@ def main():
         pass
 
     # Eval one more time.
-    evaluate_and_log(va_iter, 'val', train_step=-1)
+    evaluate_and_log(optimizer, va_iter, 'val', train_step=-1)
 
     # Load the best saved model.
     logger.info("Loading best checkpoint")
@@ -744,7 +744,7 @@ def main():
         logger.warn('no model file, using current model for loss')
 
     # Run on test data.
-    evaluate_and_log(te_iter, 'test', -1)
+    evaluate_and_log(optimizer, te_iter, 'test', -1)
 
 
 if __name__ == '__main__':
