@@ -89,6 +89,10 @@ one_small_machine = {
     'local_batch_size': 6,
     'machines': 1,
     'large': True,
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+    }
 }
 
 # Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
