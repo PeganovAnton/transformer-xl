@@ -30,7 +30,6 @@ from lr_finder import LRFinder
 from pytorch_lamb import Lamb, log_lamb_rs
 from eval import evaluate
 
-from util import toscalar
 import util
 
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
@@ -131,8 +130,6 @@ parser.add_argument('--restart', action='store_true',
                     help='restart training from the saved checkpoint')
 parser.add_argument('--restart_dir', type=str, default='',
                     help='restart dir')
-parser.add_argument('--debug', action='store_true',
-                    help='run in debug mode (do not create exp dir)')
 parser.add_argument('--same_length', action='store_true',
                     help='use the same attn length for all tokens')
 parser.add_argument('--attn_type', type=int, default=0,
@@ -168,7 +165,7 @@ parser.add_argument('--dynamic_loss_scale', action='store_true',
                          ' supersedes --static-loss-scale.')
 
 # distributed training flags
-parser.add_argument('--distributed', action='store_true', help='Run distributed training. Default True')
+parser.add_argument('--local', action='store_true', help='Run local training instead of distrbuted.')
 parser.add_argument('--dist_url', default='env://', type=str,
                     help='url used to set up distributed training')
 parser.add_argument('--dist_backend', default='nccl', type=str, help='distributed backend')
@@ -193,29 +190,10 @@ global_token_count = 0
 event_writer = util.NoOp()
 epoch = 0
 train_step = 0
-current_batch_size = args.batch_size
 
 local_rank = args.local_rank
 global_rank = util.get_global_rank()
 max_rank = util.get_world_size()
-
-# At the given batch index, use the given training batch size.
-# TODO: make this an arg
-# if args.batch_size == 96:  # small model
-#     BATCH_SCHEDULE = {
-#         0: 2,
-#         400: 4,
-#         800: 8,
-#         1600: 16,
-#         3200: 32,
-#         4800: 48,
-#         5600: 56,
-#         6400: 64,
-#         7200: 72,
-#         8000: 80,
-#         9600: 96,
-#     }
-BATCH_SCHEDULE = {}
 
 class FileLogger:
     def __init__(self, output_dir: str, global_rank: int, local_rank: int):
@@ -322,7 +300,6 @@ if torch.cuda.is_available():
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
 ###############################################################################
 # Load data
 ###############################################################################
@@ -399,27 +376,11 @@ def weights_init(m):
             init_bias(m.r_bias)
 
 
-# todo(y): move into main()
 logger.info(f"Torch version: {torch.__version__}")
 logger.info('=' * 100)
 for k, v in args.__dict__.items():
     logger.info(f'    - {k} : {v}')
 logger.info('=' * 100)
-
-def log_SNR(optimizer: optim.Optimizer, event_writer: SummaryWriter, token_count: int):
-    """Log a histogram of trust ratio scalars in across layers."""
-    results = collections.defaultdict(list)
-    for group in optimizer.param_groups:
-        for p in group['params']:
-            if p.grad is None:
-                continue
-            m, v = p.grad.mean(), p.grad.var()
-            results['mean'].append(m)
-            results['var'].append(v)
-            results['snr'].append(m / v.sqrt())
-
-    for k, v in results.items():
-        event_writer.add_histogram(f'grad/{k}', torch.tensor(v), token_count)
 
 
 ###############################################################################
@@ -431,7 +392,7 @@ def evaluate_and_log(optimizer, eval_iter, split, train_step=-1):
     global best_val_loss
     eval_start_time = time.time()
 
-    # Have to unwrap twice: DDP & FP16
+    # Have to unwrap DDP & FP16, if using.
     def unwrap(module):
         if isinstance(module, MemTransformerLM):
             return module
@@ -457,44 +418,39 @@ def evaluate_and_log(optimizer, eval_iter, split, train_step=-1):
     mean_loss = total_loss / total_len
     logger.info('-' * 100)
     log_str = (f'| Eval {train_step // args.eval_interval:3d} at step {train_step:>8d} | ' +
-                f'time: {time.time() - eval_start_time:5.2f}s ' +
-                f'| {split} loss {mean_loss:5.2f}')
+               f'time: {time.time() - eval_start_time:5.2f}s ' +
+               f'| {split} loss {mean_loss:5.2f}')
     if args.dataset in ['enwik8', 'text8']:
         log_str += f' | bpc {mean_loss / math.log(2):9.5f}'
     else:
         log_str += f' | {split} ppl {math.exp(mean_loss):9.3f}'
     logger.info(log_str)
     logger.info('-' * 100)
-    log_tb(f'loss/{split}_loss', mean_loss)
-    log_tb(f'loss/{split}_ppl', math.exp(mean_loss))
+    log_tb(f'learning/{split}_loss', mean_loss)
+    log_tb(f'learning/{split}_ppl', math.exp(mean_loss))
 
     # Update checkpoint if validation loss improved.
-    if split == 'val' and  (not best_val_loss or mean_loss < best_val_loss):
-        if not args.debug:
-            logger.info('Saving checkpoint for new best loss')
-            util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
-
+    if split == 'val' and (not best_val_loss or mean_loss < best_val_loss):
+        logger.info('Saving checkpoint for new best loss')
+        util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
         best_val_loss = mean_loss
 
 
 def train(va_iter, optimizer, scheduler):
     global global_token_count, event_writer, train_loss, best_val_loss, \
-        train_step, last_log_step, epoch, current_batch_size
+        train_step, last_log_step, epoch
     # Turn on training mode which enables dropout.
     model.train()
 
-    current_batch_size = BATCH_SCHEDULE.get(train_step, current_batch_size)
-
-    log_tb('sizes/batch_size', current_batch_size)
+    log_tb('sizes/batch_size', args.batch_size)
     log_tb('sizes/seq_size', args.tgt_len)
+
     tr_iter = corpus.get_dist_iterator(
-        'train', global_rank, max_rank, current_batch_size, args.tgt_len,
+        'train', global_rank, max_rank, args.batch_size, args.tgt_len,
         device=device, ext_len=args.ext_len)
     mems = tuple()
     log_start_time = time.time()
     for batch, (data, target, seq_len) in enumerate(tr_iter):
-        # TODO(y): batch is dimension 1, why?
-
         assert seq_len == data.shape[0]
         for i in range(1, data.shape[0]):
             assert torch.all(torch.eq(data[i], target[i - 1]))
@@ -502,12 +458,13 @@ def train(va_iter, optimizer, scheduler):
 
         batch_total = torch.tensor(data.shape[1]).to(device)
         batch_total = batch_total.to(device)  # needed for NCCL sync
-        if args.distributed:
-            batch_total = util.dist_sum_tensor(batch_total)  # global batch size
-        else:
+        if args.local:
             batch_total = batch_total.sum()
+        else:
+            batch_total = util.dist_sum_tensor(batch_total)  # global batch size
+            batch_total = util.toscalar(batch_total)
 
-        total_tokens = batch_total.item() * seq_len
+        total_tokens = batch_total * seq_len
         should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
 
         global_token_count += total_tokens
@@ -559,21 +516,27 @@ def train(va_iter, optimizer, scheduler):
             else:
                 log_str += f' | ppl {math.exp(cur_loss):9.3f}'
             logger.info(log_str)
-            log_tb('loss/epoch', epoch)
-            log_tb('loss/loss', cur_loss)
-            log_tb('loss/ppl', math.exp(cur_loss))
+            log_tb('learning/epoch', epoch)
+            log_tb('_loss', cur_loss)  # the most important thing
+            log_tb('learning/loss', cur_loss)
+            log_tb('learning/ppl', math.exp(cur_loss))
+
+            # currently step timings are not synchronized in multi-machine
+            # case (see #4). Can add torch.distributed.barrier() to get
+            # more accurate timings, but this may add slowness.
             log_tb('times/step', 1000 * elapsed_time / elapsed_steps)
             current_lr = optimizer.param_groups[0]['lr']
-            log_tb('lr/lr', current_lr)
-            log_tb('lr/batch_normalized', current_lr / toscalar(batch_total))
-            log_tb('lr/token_normalized', current_lr / toscalar(total_tokens))
+
+            log_tb('learning/lr', current_lr)
+
+            # 32 is the "canonical" batch size
+            linear_scaling_factor = batch_total / 32
+            log_tb('learning/base_lr', current_lr / linear_scaling_factor)
             if args.optim == 'lamb':
                 log_lamb_rs(optimizer, event_writer, global_token_count)
-            # This didn't provide any insight, so commented out for now.
-            # log_SNR(optimizer, event_writer, global_token_count)
 
             time_per_batch = elapsed_time / elapsed_steps
-            time_per_sample = time_per_batch / current_batch_size
+            time_per_sample = time_per_batch / args.batch_size
             time_per_token = time_per_sample / args.tgt_len
 
             log_tb('times/batches_per_sec', 1 / time_per_batch)
@@ -586,7 +549,6 @@ def train(va_iter, optimizer, scheduler):
                 log_tb("memory/cached_gb", torch.cuda.memory_cached() / 1e9)
                 log_tb("memory/max_cached_gb", torch.cuda.max_memory_cached() / 1e9)
 
-            # todo(y): refactor to init loss at the top
             train_loss = 0
             log_start_time = time.time()
             last_log_step = train_step
@@ -597,11 +559,6 @@ def train(va_iter, optimizer, scheduler):
         if global_token_count >= args.max_tokens:
             logger.info('End of schedule, staying at current LR')
             args.scheduler = 'constant'
-
-        # Start a new epoch early
-        if train_step in BATCH_SCHEDULE:
-            logger.info('Next batch schedule')
-            break
 
     if args.checkpoint_each_epoch:
         logger.info(f'Saving checkpoint for epoch {epoch}')
@@ -617,7 +574,7 @@ def main():
     else:
         os.system('shutdown -c')
 
-    if args.distributed:
+    if not args.local:
         logger.info(
             f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
         dist.init_process_group(backend=args.dist_backend,
@@ -648,7 +605,6 @@ def main():
         optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
     else:
         assert args.optim.lower() == 'adam'
-        # TODO(b): try , betas=(0.9, 0.99))
         optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
     # scheduler
@@ -662,41 +618,31 @@ def main():
     elif args.scheduler == 'constant':
         pass
 
-    # todo(y): only if rank0
     model.apply(weights_init)
     model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
 
     if args.checkpoint:
-        #        util.dist_restore_from_checkpoint(ddp_model=model, checkpoint_fn=args.checkpoint)
         if global_rank == 0:
             util.restore_from_checkpoint(model=model, checkpoint_fn=args.checkpoint)
 
-        # with open(os.path.join(args.restart_dir, 'optimizer.pt'), 'rb') as f:
-        #     opt_state_dict = torch.load(f)
-        #     optimizer.load_state_dict(opt_state_dict)
-
+    model = model.to(device)
     if args.fp16:
-        # If args.dynamic_loss_scale is False, static_loss_scale will be used.
         model = FP16_Module(model)
-        model.to(device)
-
-        # If args.dynamic_loss_scale is True, it will take precedence over static_loss_scale.
         optimizer = FP16_Optimizer(optimizer,
                                    static_loss_scale=args.static_loss_scale,
                                    dynamic_loss_scale=args.dynamic_loss_scale,
                                    dynamic_loss_args={'init_scale': 2 ** 16},
                                    verbose=False)
-    model = model.to(device)
 
-    if args.distributed:
-        model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
+    if args.local:
+        model = nn.DataParallel(model, dim=1)
     else:
-        model = nn.DataParallel(model, dim=1).to(device)
+        # Uncomment find_unused_parameters and upgrade to torch 1.1 for adaptive embedding.
+        model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank) #, find_unused_parameters=True)
 
-    if global_rank == 0 and not args.debug:
+    if global_rank == 0:
         event_writer = SummaryWriter(args.logdir)
 
-    log_tb("first", time.time())
     event_writer.add_text('args', str(args))
 
     # test checkpoint writing
@@ -735,11 +681,14 @@ def main():
     if os.path.exists(model_file):
         with open(model_file, 'rb') as model_f:
             with timeit('load'):
-                model = torch.load(model_f, map_location=lambda storage, loc: storage.cuda(args.local_rank))
-                model = DistributedDataParallel(
-                    model,
-                    device_ids=[args.local_rank],
-                    output_device=args.local_rank)
+                if args.local:
+                    model = torch.load(model_f)
+                else:
+                    model = torch.load(model_f, map_location=lambda storage, loc: storage.cuda(args.local_rank))
+                    model = DistributedDataParallel(
+                        model,
+                        device_ids=[args.local_rank],
+                        output_device=args.local_rank)
     else:
         logger.warn('no model file, using current model for loss')
 

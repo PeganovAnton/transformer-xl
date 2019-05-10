@@ -351,7 +351,6 @@ def main():
         'eval_interval': 500,
         'max_tokens': int(1.5e9),
         'logdir': job.logdir,
-        'distributed': True,
         'lr': lr,
         'batch_size': local_batch_size,
         'eta_min': lr / 10,
