@@ -13,7 +13,6 @@ import tqdm
 
 from pytorch_pretrained_bert import GPT2Tokenizer
 
-
 def main():
     parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
     parser.add_argument('--work_dir', type=str, required=True,
@@ -26,6 +25,8 @@ def main():
                         help='Limit sampling to top K probabilities. If 0, use all.')
     parser.add_argument('--length', type=int, default=200,
                         help='what sequence length to generate')
+    parser.add_argument('--max_context', type=int, default=384,
+                        help='Maximum context length the model uses during generation')
     parser.add_argument('--batch_size', type=int, default=10,
                         help='what sequence length to generate')
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -61,7 +62,7 @@ def main():
     for i in tqdm.trange(args.length):
         ## Grab a sample from the last frame, append to result list, append to `data`
         # TODO: using mems breaks generation. Find a way to fix?
-        pred_hid, mems_ = predict(model, data, mems)
+        pred_hid, mems_ = predict(model, data[-args.max_context:], mems)
         softmax = hidden_to_softmax(model, pred_hid[-1], top_k=args.top_k, temperature=args.temperature)
 
         new_sample = torch.multinomial(softmax, num_samples=1).unsqueeze(-1).squeeze(2)
