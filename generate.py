@@ -1,3 +1,8 @@
+"""Generate samples from a model.
+
+Note: only works for BPE-based models.
+Based on https://github.com/huggingface/pytorch-pretrained-BERT/blob/master/examples/run_gpt2.py
+"""
 import argparse
 import os
 
@@ -21,6 +26,10 @@ def main():
                         help='Limit sampling to top K probabilities. If 0, use all.')
     parser.add_argument('--length', type=int, default=200,
                         help='what sequence length to generate')
+    parser.add_argument('--batch_size', type=int, default=10,
+                        help='what sequence length to generate')
+    parser.add_argument("--temperature", type=float, default=1.0)
+
 
     args = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -40,18 +49,23 @@ def main():
     model.eval()
 
     ## Init
-    data = torch.tensor(NL*4 + tokenizer.encode(args.context))
-    # Turn into a batch. TODO: take batch_size
+    data = torch.tensor(NL*4 + tokenizer.encode(args.context)).to(device)
+    # Turn into a batch.
     data.unsqueeze_(1)
+    data = data.repeat_interleave(args.batch_size, dim=1)
+
+    if not hasattr(model, 'init_mems'):
+        model = model.module
     mems = model.init_mems()
 
     for i in tqdm.trange(args.length):
         ## Grab a sample from the last frame, append to result list, append to `data`
-        pred_hid, mems = predict(model, data, mems)
-        softmax = hidden_to_softmax(model, pred_hid[-1], top_k=args.top_k)
+        # TODO: using mems breaks generation. Find a way to fix?
+        pred_hid, mems_ = predict(model, data, mems)
+        softmax = hidden_to_softmax(model, pred_hid[-1], top_k=args.top_k, temperature=args.temperature)
 
         new_sample = torch.multinomial(softmax, num_samples=1).unsqueeze(-1).squeeze(2)
-        data = torch.cat((data, new_sample), dim=0)
+        data = torch.cat((data, new_sample.t()), dim=0)
 
     for i in range(data.size(1)):
         print('=' * 40, 'sample', i + 1, '=' * 40)
