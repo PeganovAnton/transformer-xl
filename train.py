@@ -498,7 +498,8 @@ def train(va_iter, optimizer, scheduler):
                     curr_lr = args.lr * global_token_count / args.warmup_tokens
                     optimizer.param_groups[0]['lr'] = curr_lr
                 elif args.scheduler == 'cosine':
-                    scheduler.step(global_token_count)
+                    # Divide by 1e6 for numerical stability.
+                    scheduler.step(global_token_count // 1e6)
             else:
                 scheduler.step(global_token_count)
 
@@ -557,6 +558,8 @@ def train(va_iter, optimizer, scheduler):
             evaluate_and_log(optimizer, va_iter, 'val', train_step)
 
         if global_token_count >= args.max_tokens:
+            if args.eta_min == 0:
+                raise StopIteration
             logger.info('End of schedule, staying at current LR')
             args.scheduler = 'constant'
 
@@ -609,10 +612,8 @@ def main():
 
     # scheduler
     if args.scheduler == 'cosine':
-        # here we do not set eta_min to lr_min to be backward compatible
-        # because in previous versions eta_min is default to 0
-        # rather than the default value of lr_min 1e-6
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens, eta_min=args.eta_min)
+        # Divide by 1e6 for numerical stability.
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens // 1e6, eta_min=args.eta_min)
     elif args.scheduler == 'finder':
         scheduler = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
     elif args.scheduler == 'constant':
@@ -656,7 +657,7 @@ def main():
     last_log_step = 0
     best_val_loss = None
     va_iter, te_iter = [
-        corpus.get_dist_iterator(
+         corpus.get_dist_iterator(
             split, global_rank, max_rank, args.batch_size * 2, args.tgt_len,
             device=device, ext_len=args.ext_len)
         for split in ('valid', 'test')
