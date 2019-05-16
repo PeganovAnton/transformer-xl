@@ -446,7 +446,7 @@ def train(va_iter, optimizer, scheduler):
     log_tb('sizes/seq_size', args.tgt_len)
 
     tr_iter = corpus.get_dist_iterator(
-        'train', global_rank, max_rank, args.batch_size, args.tgt_len,
+        'train', rank=global_rank, max_rank=max_rank, bsz=args.batch_size, bptt=args.tgt_len,
         device=device, ext_len=args.ext_len)
     mems = tuple()
     log_start_time = time.time()
@@ -658,7 +658,7 @@ def main():
     best_val_loss = None
     va_iter, te_iter = [
          corpus.get_dist_iterator(
-            split, global_rank, max_rank, args.batch_size * 2, args.tgt_len,
+            split, bsz=args.batch_size * 2, bptt=args.tgt_len, rank=global_rank, max_rank=max_rank, 
             device=device, ext_len=args.ext_len)
         for split in ('valid', 'test')
     ]

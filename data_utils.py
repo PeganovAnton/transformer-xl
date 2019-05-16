@@ -251,7 +251,6 @@ class Corpus:
         if self.dataset in ['lm1b', 'wiki']:
             if split == 'train':
                 return LMMultiFileIterator(subset, self.vocab, *args, **kwargs)
-        
         return LMOrderedIterator(subset, *args, **kwargs)
 
     def get_iterator(self, split: str, *args, **kwargs):
