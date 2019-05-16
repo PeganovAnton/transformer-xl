@@ -118,7 +118,7 @@ parser.add_argument('--retune_interval', type=int, default=5,
                     help='how often to retune parameters')
 parser.add_argument('--verbose_log_steps', type=int, default=60,
                     help='do logging at every step for this many steps at the start of training')
-parser.add_argument('--eval_interval', type=int, default=4000,
+parser.add_argument('--eval_interval', type=int, default=400,
                     help='evaluation interval in number of steps')
 
 parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
