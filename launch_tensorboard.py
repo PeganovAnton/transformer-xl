@@ -1,7 +1,7 @@
 import os
 import ncluster
 task = ncluster.make_task('tensorboard', instance_type='r5.large',
-                          image_name='Deep Learning AMI (Ubuntu) Version 22.0')
+                          image_name='cybertronai01')
 
 task.run('source activate tensorflow_p36')
 logdir_root = os.path.dirname(task.logdir)
