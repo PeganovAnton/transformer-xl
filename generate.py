@@ -60,8 +60,7 @@ def main():
 
     for i in tqdm.trange(args.length):
         ## Grab a sample from the last frame, append to result list, append to `data`
-        # TODO: using mems breaks generation. Find a way to fix?
-        pred_hid, mems_ = predict(model, data[-args.max_context:], mems)
+        pred_hid, mems = predict(model, data[-args.max_context:] if i == 0 else data[-1:], mems)
         softmax = hidden_to_softmax(model, pred_hid[-1], top_k=args.top_k, temperature=args.temperature, top_p=args.top_p)
 
         new_sample = torch.multinomial(softmax, num_samples=1).unsqueeze(-1).squeeze(2)
