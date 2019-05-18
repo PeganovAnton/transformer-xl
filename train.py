@@ -617,7 +617,7 @@ def main():
     elif args.scheduler == 'finder':
         scheduler = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
     elif args.scheduler == 'constant':
-        pass
+        scheduler = util.NoOp()
 
     model.apply(weights_init)
     model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing

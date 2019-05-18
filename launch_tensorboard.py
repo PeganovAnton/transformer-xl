@@ -1,7 +1,17 @@
 import os
 import ncluster
-task = ncluster.make_task('tensorboard', instance_type='r5.large',
-                          image_name='Deep Learning AMI (Ubuntu) Version 22.0')
+
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--name', type=str, default='tensorboard',
+                    help="name of the current run, used for machine naming and rundir name")
+parser.add_argument('--image_name', type=str, default='cybertronai01',
+                    help="use custom AMI ")
+args = parser.parse_args()
+
+
+task = ncluster.make_task(args.name, instance_type='r5.large',
+                          image_name=args.image_name)
 
 task.run('source activate tensorflow_p36')
 logdir_root = os.path.dirname(task.logdir)

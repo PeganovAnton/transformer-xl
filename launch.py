@@ -95,6 +95,22 @@ one_small_machine = {
     }
 }
 
+one_small_machine_wiki = {
+    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'instance_type': 'p3.16xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    'checkpoint': '/ncluster/runs/txl.09/model-best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/wikiextracted',
+        'dataset': 'wiki',
+    }
+}
+
 # Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
 # Differences: fp16, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
 # logs: ben-large-lamb-slow
