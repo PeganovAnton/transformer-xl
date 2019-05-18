@@ -47,7 +47,7 @@ args = parser.parse_args()
 # default environment settings, should change rarely since they affect
 # all configs
 IMAGE_NAME = 'cybertronai00'
-CONDA_ENV = 'pytorch_p36'
+CONDA_ENV = 'pytorch_april'
 
 # 'base_lr': learning rate for BASE_LR_BATCHSIZE, linear lr scaling will grow this rate proportionally to final global
 # batch size
