@@ -19,10 +19,10 @@ def main():
                         help='path to the work_dir')
     parser.add_argument('--context', type=str, default='',
                         help='Conditional generation context')
-    parser.add_argument('--seed', type=int, default=1111,
-                        help='random seed')
     parser.add_argument('--top_k', type=int, default=0,
                         help='Limit sampling to top K probabilities. If 0, use all.')
+    parser.add_argument('--top_p', type=float, default=0,
+                        help='Limit sampling to p nucleus sampling. If 0, use all.')
     parser.add_argument('--length', type=int, default=200,
                         help='what sequence length to generate')
     parser.add_argument('--max_context', type=int, default=384,
@@ -35,13 +35,12 @@ def main():
     args = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    np.random.seed(args.seed)
-    torch.random.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-
     # Load the best saved model.
     with open(os.path.join(args.work_dir, 'model-best.pt'), 'rb') as f:
-        model = torch.load(f)
+        model = torch.load(f, map_location='cuda' if torch.cuda.is_available() else 'cpu')
+    
+    if not torch.cuda.is_available():
+        model = model.float()
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     NL = tokenizer.encode('\n')
@@ -61,9 +60,8 @@ def main():
 
     for i in tqdm.trange(args.length):
         ## Grab a sample from the last frame, append to result list, append to `data`
-        # TODO: using mems breaks generation. Find a way to fix?
-        pred_hid, mems_ = predict(model, data[-args.max_context:], mems)
-        softmax = hidden_to_softmax(model, pred_hid[-1], top_k=args.top_k, temperature=args.temperature)
+        pred_hid, mems = predict(model, data[-args.max_context:] if i == 0 else data[-1:], mems)
+        softmax = hidden_to_softmax(model, pred_hid[-1], top_k=args.top_k, temperature=args.temperature, top_p=args.top_p)
 
         new_sample = torch.multinomial(softmax, num_samples=1).unsqueeze(-1).squeeze(2)
         data = torch.cat((data, new_sample.t()), dim=0)
@@ -80,7 +78,7 @@ def predict(model, data, mems):
     pred_hid = hidden[-tgt_len:]
     return pred_hid, new_mems
 
-def hidden_to_softmax(model, hidden, temperature=1, top_k=0):
+def hidden_to_softmax(model, hidden, temperature=1, top_k=0, top_p=0):
     """Turn a hidden projection into log softmax.
 
     Adapted from utils/proj_adaptive_softmax.py
@@ -89,26 +87,43 @@ def hidden_to_softmax(model, hidden, temperature=1, top_k=0):
     pas = model.crit
     logits = pas._compute_logit(hidden, pas.out_layers[0].weight,
                                 pas.out_layers[0].bias, pas.out_projs[0])
-    logits = top_k_logits(logits, k=top_k)
+    logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
 
     logits /= temperature
     softmax = F.softmax(logits, dim=-1)
     return softmax
 
 
-def top_k_logits(logits, k):
-    """
-    Masks everything but the k top entries as -infinity (1e10).
-    Used to mask logits such that e^-infinity -> 0 won't contribute to the
-    sum of the denominator.
-    """
-    if k == 0:
-        return logits
-    else:
-        values = torch.topk(logits, k)[0]
-        batch_mins = values[:, -1].view(-1, 1).expand_as(logits)
-        return torch.where(logits < batch_mins, torch.ones_like(logits) * -1e10, logits)
+def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')):
+    """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
 
+    https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
+
+        Args:
+            logits: logits distribution shape (..., vocabulary size)
+            top_k >0: keep only top k tokens with highest probability (top-k filtering).
+            top_p >0.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+    """
+    top_k = min(top_k, logits.size(-1))  # Safety check
+    if top_k > 0:
+        # Remove all tokens with a probability less than the last token of the top-k
+        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+        logits[indices_to_remove] = filter_value
+
+    if top_p > 0.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+        # Remove tokens with cumulative probability above the threshold
+        sorted_indices_to_remove = cumulative_probs >= top_p
+        # Shift the indices to the right to keep also the first token above the threshold
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+
+        indices_to_remove = torch.zeros_like(logits, dtype=torch.uint8).scatter_(
+            dim=-1, index=sorted_indices, src=sorted_indices_to_remove )
+        logits[indices_to_remove] = filter_value
+    return logits
 
 if __name__ == '__main__':
     main()

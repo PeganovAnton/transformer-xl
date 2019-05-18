@@ -244,14 +244,13 @@ class Corpus:
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'wiki.test.tokens'), ordered=True, add_eos=False)
 
-    def get_dist_iterator(self, split: str, rank: int, max_rank: int, *args, **kwargs):
+    def get_dist_iterator(self, split: str, *args, rank: int = 0, max_rank: int = 1, **kwargs):
         """Get an iterator that only operates on rank//max_rank independent subset of the data."""
         data = self.__getattribute__(split)
         subset = list(chunk(data, max_rank))[rank]
         if self.dataset in ['lm1b', 'wiki']:
             if split == 'train':
                 return LMMultiFileIterator(subset, self.vocab, *args, **kwargs)
-        
         return LMOrderedIterator(subset, *args, **kwargs)
 
     def get_iterator(self, split: str, *args, **kwargs):
