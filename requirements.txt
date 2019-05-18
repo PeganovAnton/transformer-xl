@@ -1,7 +1,6 @@
 torch==1.1.0
 pytz
 numpy
-ncluster
 tqdm
 pytorch_pretrained_bert
 tensorboardX
@@ -11,10 +10,15 @@ pytorch-lamb
 git+https://github.com/8enmann/pytorch-pretrained-BERT@patch-2
 #pytorch-pretrained-bert
 portalocker
+attrdict
 
-# ncluster subdependencies
+# ncluster + subdependencies
+ncluster
 boto3
 paramiko
 portpicker
 tzlocal
-attrdict
+
+# workaround for https://github.com/tensorflow/models/issues/3995
+# requires pip uninstall protobuf
+protobuf
