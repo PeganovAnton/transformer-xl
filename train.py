@@ -79,7 +79,7 @@ parser.add_argument('--wd', type=float, default=0,
 parser.add_argument('--scheduler', default='cosine', type=str,
                     choices=['cosine', 'inv_sqrt', 'dev_perf', 'constant', 'finder'],
                     help='lr scheduler to use.')
-parser.add_argument('--warmup_tokens', type=int, default=0,
+parser.add_argument('--warmup_tokens', type=float, default=0,
                     help='upper epoch limit')
 parser.add_argument('--decay_rate', type=float, default=0.5,
                     help='decay factor when ReduceLROnPlateau is used')
