@@ -1,7 +1,6 @@
 # coding: utf-8
 #
 import argparse
-import collections
 import datetime
 import itertools
 import logging
@@ -20,7 +19,6 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
-import tqdm
 from tensorboardX import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel
 
@@ -125,7 +123,8 @@ parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
                     help='whether to save checkpoint at each epoch')
 parser.add_argument('--checkpoint', type=str, default='',
                     help='checkpoint file to use to restore training')
-
+parser.add_argument('--optim_state_dict', type=str, default='',
+                    help='checkpoint (state_dict) of optimizer')
 parser.add_argument('--restart', action='store_true',
                     help='restart training from the saved checkpoint')
 parser.add_argument('--restart_dir', type=str, default='',
@@ -624,7 +623,13 @@ def main():
 
     if args.checkpoint:
         if global_rank == 0:
-            util.restore_from_checkpoint(model=model, checkpoint_fn=args.checkpoint)
+            optimizer_state_dict_fn = ''
+            if args.optim_state_dict:
+                optimizer_state_dict_fn = args.optim_state_dict
+            util.restore_from_checkpoint(model=model,
+                                         optimizer=optimizer,
+                                         checkpoint_fn=args.checkpoint,
+                                         optimizer_state_dict_fn=optimizer_state_dict_fn)
 
     model = model.to(device)
     if args.fp16:

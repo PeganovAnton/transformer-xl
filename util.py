@@ -7,7 +7,8 @@ import torch.distributed as dist
 
 def toscalar(t):  # use on python scalars/pytorch scalars
     """Converts Python scalar or PyTorch tensor to Python scalar"""
-    if isinstance(t, (float, int)): return t
+    if isinstance(t, (float, int)):
+        return t
     if hasattr(t, 'item'):
         return t.item()
     else:
@@ -53,6 +54,7 @@ def one_of(l):
     else:
         assert f"List {l} has more than one non-zero entries"
     
+
 def dist_sum_tensor(tensor):
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
@@ -67,30 +69,37 @@ class NoOp:
         return no_op
 
 
-def dist_restore_from_checkpoint(ddp_model, checkpoint_fn: str, force_fp16=False):
-    """Restores model wrapped in DistributedDataParallel from checkpoint file. Assumes checkpoint was saved
-    as torch.save(ddp.module) or distributed_save_checkpoint
-    """
+# Deprecated method, regular restore + DDP already broadcasts args
+# def dist_restore_from_checkpoint(ddp_model, checkpoint_fn: str, force_fp16=False):
+#     """Restores model wrapped in DistributedDataParallel from checkpoint file. Assumes checkpoint was saved
+#     as torch.save(ddp.module) or distributed_save_checkpoint
+#     """
 
-    if get_global_rank() == 0:
-        saved_model = torch.load(checkpoint_fn)
-        state_dict = saved_model.state_dict()
-        if force_fp16:
-            for name in state_dict:
-                state_dict[name] = state_dict[name].half()
-        ddp_model.module.load_state_dict(state_dict)
+#     if get_global_rank() == 0:
+#         saved_model = torch.load(checkpoint_fn)
+#         state_dict = saved_model.state_dict()
+#         if force_fp16:
+#             for name in state_dict:
+#                 state_dict[name] = state_dict[name].half()
+#         ddp_model.module.load_state_dict(state_dict)
 
-    pp = next(ddp_model.module.parameters())
-    print(f"{get_global_rank()}  -- Before broadcast {pp.view(-1)[0]}")
-    for p in ddp_model.module.parameters():
-        if torch.is_tensor(p):
-            dist.broadcast(p, 0)
-    print(f"{get_global_rank()}  -- After broadcast {pp.view(-1)[0]}")
+#     pp = next(ddp_model.module.parameters())
+#     print(f"{get_global_rank()}  -- Before broadcast {pp.view(-1)[0]}")
+#     for p in ddp_model.module.parameters():
+#         if torch.is_tensor(p):
+#             dist.broadcast(p, 0)
+#     print(f"{get_global_rank()}  -- After broadcast {pp.view(-1)[0]}")
 
 
-def restore_from_checkpoint(model, checkpoint_fn: str, force_fp16=False):
-    """Restores model wrapped in DistributedDataParallel from checkpoint file. Assumes checkpoint was saved
-    as torch.save(ddp.module) or distributed_save_checkpoint
+def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
+                            optimizer_state_dict_fn: str = '', force_fp16=False):
+    """Restores model wrapped in DistributedDataParallel from checkpoint file.
+    Assumes checkpoint was saved as torch.save(ddp.module).
+
+    If optimizer_state_dict_fn is provided, also tries to restore optimizer state from state_dict saved in that file.
+
+    Assumes optimizer is regular optimizer, not FP16Optimizer(optimizer), must wrap FP16 on top
+    of restored optimizer here.
     """
 
     saved_model = torch.load(checkpoint_fn)
@@ -100,6 +109,15 @@ def restore_from_checkpoint(model, checkpoint_fn: str, force_fp16=False):
             state_dict[name] = state_dict[name].half()
     model.load_state_dict(state_dict)
 
+    assert 'FP16_Optimizer' not in type(optimizer).__name__, f"Checkpoint restore works on PyTorch optimizers, but " \
+        f"found {type(optimizer).__name__}, found unwrap your optimizer first"
+    if optimizer_state_dict_fn:
+        optimizer_state_dict = torch.load(optimizer_state_dict_fn)
+        # another layer of indirection added for FP16Optimizer
+        if 'optimizer_state_dict' in optimizer_state_dict:
+            optimizer_state_dict = optimizer_state_dict['optimizer_state_dict']
+        optimizer.load_state_dict(optimizer_state_dict)
+    
 
 def dist_save_checkpoint(ddp_model, optimizer_, directory: str, suffix=''):
     """Saves model/optimizer into {directory}/optimizer-{suffix}.py and {directory}/model-{suffix}.pt"""
