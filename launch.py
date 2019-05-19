@@ -2,7 +2,7 @@
 """Launch training on AWS with 8 GPUs."""
 
 import argparse
-from attrdict import AttrDict, AttrDefault
+from attrdict import AttrDefault
 import re
 import util
 
@@ -46,8 +46,8 @@ args = parser.parse_args()
 
 # default environment settings, should change rarely since they affect
 # all configs
-IMAGE_NAME = 'cybertronai00'
-CONDA_ENV = 'pytorch_april'
+IMAGE_NAME = 'cybertronai01'
+CONDA_ENV = 'pytorch_april_nccl237'
 
 # 'base_lr': learning rate for BASE_LR_BATCHSIZE, linear lr scaling will grow this rate proportionally to final global
 # batch size
@@ -84,7 +84,7 @@ one_machine_fp16 = {
 }
 
 one_small_machine = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.001 / 4,  # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3.16xlarge',
     'local_batch_size': 6,
     'machines': 1,
@@ -102,6 +102,7 @@ one_small_machine_wiki = {
     'machines': 1,
     'large': True,
     'checkpoint': '/ncluster/runs/txl.09/model-best.pt',  # us-east-1
+    'optim_state_dict': '/ncluster/runs/txl.09/optimizer-best.pt',
     'extra_worker_params': {
         'fp16': True,
         'dynamic_loss_scale': True,
@@ -345,6 +346,9 @@ def main():
     job.rsync('.')
     job.run(f'killall python || echo failed && '  # kill previous run
             f'source activate {config.conda_env} && ' +
+            # protobuf https://github.com/tensorflow/models/issues/3995
+            f'pip uninstall -y protobuf && '+
+            f'pip install -U protobuf && '+
             f'pip install -r requirements.txt')
 
     local_batch_size = config.local_batch_size
@@ -383,6 +387,9 @@ def main():
 
     if args.checkpoint or config.checkpoint:
         user_params['checkpoint'] = util.one_of([args.checkpoint, config.checkpoint])
+
+    if config.optim_state_dict:
+        user_params['optim_state_dict'] = config.optim_state_dict
 
     if args.wiki:
         worker_params.update({

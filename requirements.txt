@@ -18,7 +18,3 @@ boto3
 paramiko
 portpicker
 tzlocal
-
-# workaround for https://github.com/tensorflow/models/issues/3995
-# requires pip uninstall protobuf
-protobuf
