@@ -629,7 +629,8 @@ def main():
             util.restore_from_checkpoint(model=model,
                                          optimizer=optimizer,
                                          checkpoint_fn=args.checkpoint,
-                                         optimizer_state_dict_fn=optimizer_state_dict_fn)
+                                         optimizer_state_dict_fn=optimizer_state_dict_fn,
+                                         override_lr=args.lr)
 
     model = model.to(device)
     if args.fp16:

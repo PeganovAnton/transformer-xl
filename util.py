@@ -92,7 +92,8 @@ class NoOp:
 
 
 def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
-                            optimizer_state_dict_fn: str = '', force_fp16=False):
+                            optimizer_state_dict_fn: str = '', force_fp16=False,
+                            override_lr=0):
     """Restores model wrapped in DistributedDataParallel from checkpoint file.
     Assumes checkpoint was saved as torch.save(ddp.module).
 
@@ -116,6 +117,8 @@ def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
         # another layer of indirection added for FP16Optimizer
         if 'optimizer_state_dict' in optimizer_state_dict:
             optimizer_state_dict = optimizer_state_dict['optimizer_state_dict']
+        if override_lr:
+            optimizer_state_dict['param_groups'][0]['lr'] = override_lr
         optimizer.load_state_dict(optimizer_state_dict)
     
 
