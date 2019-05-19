@@ -96,7 +96,7 @@ one_small_machine = {
 }
 
 one_small_machine_wiki = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.001 / 4 / 48, # Divide by 4 to counteract batch adjustment, by 48 to match previous run empirically
     'instance_type': 'p3.16xlarge',
     'local_batch_size': 6,
     'machines': 1,
