@@ -6,7 +6,7 @@ Extending [Transformer-XL](https://github.com/kimiyoung/transformer-xl) for dist
 
 
 ## One machine
-Reproduce 21.5 perplexity on wikitext-103 after 2 hours 50 minutes and one machine with 180M Transformer-XL.
+Reproduce 24.617 test perplexity on wikitext-103 after 2 hours 54 minutes and one machine with 180M Transformer-XL (internal logs: east/txl.03).
 ```
 aws configure
 pip install -r requirements.txt
