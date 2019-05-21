@@ -574,7 +574,8 @@ def main():
     if args.local_rank > 0:
         pass  # skip shutdown when rank is explicitly set + not zero rank
     else:
-        os.system('shutdown -c')
+        if not args.local:
+            os.system('shutdown -c')
 
     if not args.local:
         logger.info(
@@ -709,7 +710,8 @@ if __name__ == '__main__':
             warnings.simplefilter("ignore", category=UserWarning)
             main()
         if not args.skip_auto_shutdown and args.local_rank == 0:
-            os.system(f'sudo shutdown -h -P +{args.auto_shutdown_success_delay_mins}')
+            if not args.local:
+                os.system(f'sudo shutdown -h -P +{args.auto_shutdown_success_delay_mins}')
     except Exception as e:
         import traceback
 
@@ -718,4 +720,5 @@ if __name__ == '__main__':
         logger.exception('Failed')
         # in case of exception, wait 2 hours before shutting down
         if not args.skip_auto_shutdown:
-            os.system(f'sudo shutdown -h -P +{args.auto_shutdown_failure_delay_mins}')
+            if not args.local:
+                os.system(f'sudo shutdown -h -P +{args.auto_shutdown_failure_delay_mins}')
