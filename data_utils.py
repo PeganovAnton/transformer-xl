@@ -11,59 +11,54 @@ from utils.vocabulary import OpenAIVocab, Vocab
 
 
 class LMOrderedIterator:
-    def __init__(self, data, bsz, bptt, device='cpu', ext_len=None):
+    def __init__(self, data, bsz: int, bptt: int, offset: int = 0,
+                 device: str = 'cpu', ext_len=None):
         """
             data -- LongTensor -- the LongTensor is strictly ordered
+            offset -- batch index offset
         """
-        self.bsz = bsz
-        self.bptt = bptt
+        self.offset = offset
+        self.batch_idx = 0
+        self.bsz = bsz     # batch size
+        self.bptt = bptt   # context length (ie, tgt_len)
         self.ext_len = ext_len if ext_len is not None else 0
 
         self.device = device
 
-        # Work out how cleanly we can divide the dataset into bsz parts.
-        self.n_step = data.size(0) // bsz
+        self.n_step = data.size(0) // bsz     # number of tokens per stream
 
         # Trim off any extra elements that wouldn't cleanly fit (remainders).
         data = data.narrow(0, 0, self.n_step * bsz)
 
         # Evenly divide the data across the bsz batches.
+        # shape: (nstep, bsz)
         self.data = data.view(bsz, -1).t().contiguous().to(device)
 
         # Number of mini-batches
         self.n_batch = (self.n_step + self.bptt - 1) // self.bptt
 
-    def get_batch(self, i, bptt=None):
-        if bptt is None: bptt = self.bptt
-        seq_len = min(bptt, self.data.size(0) - 1 - i)
+    def get_batch(self, i: int):
+        """
+        Args:
+            i: position in stream of first token for current context
+
+        Returns:
+            data (seq_len+ext_len, bsz), target (seq_len, bsz)
+        """
+        seq_len = min(self.bptt, self.data.size(0) - 1 - i)
 
         end_idx = i + seq_len
         beg_idx = max(0, i - self.ext_len)
 
-        data = self.data[beg_idx:end_idx]
-        target = self.data[i+1:i+1+seq_len]
+        data = self.data[beg_idx: end_idx]
+        target = self.data[i + 1:i + 1 + seq_len]
 
         return data, target, seq_len
 
-    def get_fixlen_iter(self, start=0):
-        for i in range(start, self.data.size(0) - 1, self.bptt):
-            yield self.get_batch(i)
-    
-    def get_varlen_iter(self, start=0, std=5, min_len=5, max_deviation=3):
-        max_len = self.bptt + max_deviation * std
-        i = start
-        while True:
-            bptt = self.bptt if np.random.random() < 0.95 else self.bptt / 2.
-            bptt = min(max_len, max(min_len, int(np.random.normal(bptt, std))))
-            data, target, seq_len = self.get_batch(i, bptt)
-            i += seq_len
-            yield data, target, seq_len
-            if i >= self.data.size(0) - 2:
-                break
-
     def __iter__(self):
-        """Wrapper for get_fixlen_iter."""
-        return self.get_fixlen_iter()
+        for i in range(self.offset, self.data.size(0) - 1, self.bptt):
+            self.batch_idx = i
+            yield self.get_batch(i)
 
 
 class LMShuffledIterator:
@@ -115,10 +110,10 @@ class LMShuffledIterator:
                         # number of new tokens to fill in
                         n_new = min(len(streams[i]) - 1, self.bptt - n_filled)
                         # first n_retain tokens are retained from last batch
-                        data[n_retain+n_filled:n_retain+n_filled+n_new, i] = \
+                        data[n_retain + n_filled:n_retain + n_filled + n_new, i] = \
                             streams[i][:n_new]
-                        target[n_filled:n_filled+n_new, i] = \
-                            streams[i][1:n_new+1]
+                        target[n_filled:n_filled + n_new, i] = \
+                            streams[i][1:n_new + 1]
                         streams[i] = streams[i][n_new:]
                         n_filled += n_new
                 except StopIteration:
@@ -148,7 +143,7 @@ class LMShuffledIterator:
 
 class LMMultiFileIterator(LMShuffledIterator):
     def __init__(self, paths, vocab, bsz, bptt, device='cpu', ext_len=None,
-        shuffle=False):
+                 shuffle=False):
 
         self.paths = paths
         self.vocab = vocab
@@ -205,9 +200,9 @@ class Corpus:
         elif self.dataset == 'wiki':
             file_path_pattern = os.path.join(path, '*/wiki_*.txt')
             file_paths = glob.glob(file_path_pattern)
-            assert file_paths, f'Nothing found at {file_path_pattern}' 
+            assert file_paths, f'Nothing found at {file_path_pattern}'
 
-        # the vocab will load from file when build_vocab() is called
+            # the vocab will load from file when build_vocab() is called
         self.vocab.build_vocab()
 
         if self.dataset in ['ptb', 'wt2', 'wt103']:
@@ -265,7 +260,7 @@ class Corpus:
         if self.dataset == 'lm1b':
             if split in ['valid', 'test']:
                 return LMShuffledIterator(data, *args, **kwargs)
-            
+
             kwargs['shuffle'] = True
             return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
         if self.dataset == 'wiki':
@@ -308,6 +303,7 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
 
     return corpus
 
+
 def chunk(a: list, n: int):
     """Split `a` into `n` chunks, with the last bucket taking the remaining.
     
@@ -315,6 +311,7 @@ def chunk(a: list, n: int):
     """
     k, m = divmod(len(a), n)
     return (a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n))
+
 
 def main():
     import argparse
@@ -329,7 +326,7 @@ def main():
 
     corpus = get_lm_corpus(args.datadir, args.dataset, use_bpe=True)
     print(f'Vocab size : {len(corpus.vocab)}')
-    #tr_iter = corpus.get_iterator('train', 16, 150, 'cpu', ext_len=0)
+    # tr_iter = corpus.get_iterator('train', 16, 150, 'cpu', ext_len=0)
     # Loop through all the data to force caching.
     for split in ('train', 'valid', 'test'):
         tr_iter = corpus.get_dist_iterator(split, rank=0, max_rank=1, bsz=16, bptt=150, device='cpu', ext_len=0)
@@ -337,6 +334,7 @@ def main():
             if args.debug:
                 print(data.shape, target.shape, seq_len, len(list(tr_iter)))
                 break
+
 
 if __name__ == '__main__':
     main()

@@ -121,8 +121,14 @@ parser.add_argument('--eval_interval', type=int, default=4000,
 
 parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
                     help='whether to save checkpoint at each epoch')
+parser.add_argument('--checkpoint_at_end', type=int, default=0,
+                    help='whether to checkpoint things at the end of training')
 parser.add_argument('--checkpoint', type=str, default='',
                     help='checkpoint file to use to restore training')
+
+parser.add_argument('--load_state_fn', type=str, default='', help='location of state file to restore')
+parser.add_argument('--save_state_fn', type=str, default='', help='location of state file to save')
+
 parser.add_argument('--optim_state_dict', type=str, default='',
                     help='checkpoint (state_dict) of optimizer')
 parser.add_argument('--restart', action='store_true',
@@ -185,14 +191,12 @@ args.tied = not args.not_tied
 
 # global variables
 global_timeit_dict = OrderedDict()
-global_token_count = 0
 event_writer = util.NoOp()
-epoch = 0
-train_step = 0
-
+global_token_count = 0
 local_rank = args.local_rank
 global_rank = util.get_global_rank()
 max_rank = util.get_world_size()
+
 
 class FileLogger:
     def __init__(self, output_dir: str, global_rank: int, local_rank: int):
@@ -215,7 +219,7 @@ class FileLogger:
         vlog.setFormatter(formatter)
         logger_.addHandler(vlog)
 
-        eventlog = logging.FileHandler(output_dir +  f'/warn-{global_rank}.log')
+        eventlog = logging.FileHandler(output_dir + f'/warn-{global_rank}.log')
         eventlog.setLevel(logging.WARN)
         eventlog.setFormatter(formatter)
         logger_.addHandler(eventlog)
@@ -236,7 +240,7 @@ class FileLogger:
         self.logger.debug(*args_)
 
     def warn(self, *args_):
-        self.logger.warn(*args_)
+        self.logger.warning(*args_)
 
     def info(self, *args_):
         self.logger.info(*args_)
@@ -269,7 +273,7 @@ class timeit:
 def log_tb(tag, val):
     """Log value to tensorboard (relies on global_token_count rather than step count to give comparable graphs across
     batch sizes)"""
-    global global_token_count, event_writer
+    global event_writer, global_token_count
     event_writer.add_scalar(tag, val, global_token_count)
 
 
@@ -387,8 +391,7 @@ logger.info('=' * 100)
 ###############################################################################
 
 
-def evaluate_and_log(optimizer, eval_iter, split, train_step=-1):
-    global best_val_loss
+def evaluate_and_log(model: torch.nn.Module, optimizer, eval_iter, split, state, train_step=-1):
     eval_start_time = time.time()
 
     # Have to unwrap DDP & FP16, if using.
@@ -429,153 +432,16 @@ def evaluate_and_log(optimizer, eval_iter, split, train_step=-1):
     log_tb(f'learning/{split}_ppl', math.exp(mean_loss))
 
     # Update checkpoint if validation loss improved.
-    if split == 'val' and (not best_val_loss or mean_loss < best_val_loss):
+    if split == 'val' and (not state.best_val_loss or mean_loss < state.best_val_loss):
         logger.info('Saving checkpoint for new best loss')
         util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
-        best_val_loss = mean_loss
-
-
-def train(va_iter, optimizer, scheduler):
-    global global_token_count, event_writer, train_loss, best_val_loss, \
-        train_step, last_log_step, epoch
-    # Turn on training mode which enables dropout.
-    model.train()
-
-    log_tb('sizes/batch_size', args.batch_size)
-    log_tb('sizes/seq_size', args.tgt_len)
-
-    tr_iter = corpus.get_dist_iterator(
-        'train', rank=global_rank, max_rank=max_rank, bsz=args.batch_size, bptt=args.tgt_len,
-        device=device, ext_len=args.ext_len)
-    mems = tuple()
-    log_start_time = time.time()
-    for batch, (data, target, seq_len) in enumerate(tr_iter):
-        assert seq_len == data.shape[0]
-        for i in range(1, data.shape[0]):
-            assert torch.all(torch.eq(data[i], target[i - 1]))
-            break
-
-        batch_total = torch.tensor(data.shape[1]).to(device)
-        batch_total = batch_total.to(device)  # needed for NCCL sync
-        if args.local:
-            batch_total = batch_total.sum()
-        else:
-            batch_total = util.dist_sum_tensor(batch_total)  # global batch size
-            batch_total = util.toscalar(batch_total)
-
-        total_tokens = batch_total * seq_len
-        should_log = train_step < args.verbose_log_steps or train_step % args.log_interval == 0
-
-        global_token_count += total_tokens
-        model.zero_grad()
-        ret = model(data, target, *mems)
-        loss, mems = ret[0], ret[1:]
-        loss = loss.float().mean().type_as(loss)
-        with timeit('backwards', noop=not should_log):
-            if args.fp16:
-                optimizer.backward(loss)
-            else:
-                loss.backward()
-        train_loss += loss.float().item()
-
-        if args.fp16:
-            optimizer.clip_master_grads(args.clip)
-        else:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
-
-        optimizer.step()
-
-        train_step += 1
-
-        # step-wise learning rate annealing
-        if args.fp16 and optimizer.overflow:
-            logger.info("skipped iteration")
-        else:
-            if args.scheduler in ['cosine', 'constant', 'dev_perf']:
-                # linear warmup stage
-                if global_token_count < args.warmup_tokens:
-                    curr_lr = args.lr * global_token_count / args.warmup_tokens
-                    optimizer.param_groups[0]['lr'] = curr_lr
-                elif args.scheduler == 'cosine':
-                    # Divide by 1e6 for numerical stability.
-                    scheduler.step(global_token_count // 1e6)
-            else:
-                scheduler.step(global_token_count)
-
-
-        if should_log:
-            elapsed_time = time.time() - log_start_time
-            elapsed_steps = train_step - last_log_step
-
-            # compute average loss over last logging interval
-            cur_loss = train_loss / elapsed_steps
-            log_str = f'| epoch {epoch:3d} step {train_step:>8d} | {batch:>6d} batches | lr {optimizer.param_groups[0]["lr"]:.3g} ' \
-                      f'| ms/batch {elapsed_time * 1000 / elapsed_steps:5.2f} | loss {cur_loss:5.2f}'
-            if args.dataset in ['enwik8', 'text8']:
-                log_str += f' | bpc {cur_loss / math.log(2):9.5f}'
-            else:
-                log_str += f' | ppl {math.exp(cur_loss):9.3f}'
-            logger.info(log_str)
-            log_tb('learning/epoch', epoch)
-            log_tb('_loss', cur_loss)  # the most important thing
-            log_tb('learning/loss', cur_loss)
-            log_tb('learning/ppl', math.exp(cur_loss))
-
-            # currently step timings are not synchronized in multi-machine
-            # case (see #4). Can add torch.distributed.barrier() to get
-            # more accurate timings, but this may add slowness.
-            log_tb('times/step', 1000 * elapsed_time / elapsed_steps)
-            current_lr = optimizer.param_groups[0]['lr']
-
-            log_tb('learning/lr', current_lr)
-
-            # 32 is the "canonical" batch size
-            linear_scaling_factor = batch_total / 32
-            log_tb('learning/base_lr', current_lr / linear_scaling_factor)
-            if args.optim == 'lamb':
-                log_lamb_rs(optimizer, event_writer, global_token_count)
-
-            time_per_batch = elapsed_time / elapsed_steps
-            time_per_sample = time_per_batch / args.batch_size
-            time_per_token = time_per_sample / args.tgt_len
-
-            log_tb('times/batches_per_sec', 1 / time_per_batch)
-            log_tb('times/samples_per_sec', 1 / time_per_sample)
-            log_tb('times/tokens_per_sec', 1 / time_per_token)
-
-            if str(device) == 'cuda':
-                log_tb("memory/allocated_gb", torch.cuda.memory_allocated() / 1e9)
-                log_tb("memory/max_allocated_gb", torch.cuda.max_memory_allocated() / 1e9)
-                log_tb("memory/cached_gb", torch.cuda.memory_cached() / 1e9)
-                log_tb("memory/max_cached_gb", torch.cuda.max_memory_cached() / 1e9)
-
-            train_loss = 0
-            log_start_time = time.time()
-            last_log_step = train_step
-
-        if train_step % args.eval_interval == 0:
-            evaluate_and_log(optimizer, va_iter, 'val', train_step)
-
-        if global_token_count >= args.max_tokens:
-            if args.eta_min == 0:
-                raise StopIteration
-            logger.info('End of schedule, staying at current LR')
-            args.scheduler = 'constant'
-
-    if args.checkpoint_each_epoch:
-        logger.info(f'Saving checkpoint for epoch {epoch}')
-        util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{epoch}')
+        state.best_val_loss = mean_loss
 
 
 def main():
-    global global_token_count, event_writer, train_step, train_loss, last_log_step, \
-        best_val_loss, epoch, model
+    global event_writer, train_loss, global_token_count
 
-    if args.local_rank > 0:
-        pass  # skip shutdown when rank is explicitly set + not zero rank
-    else:
-        if not args.local:
-            os.system('shutdown -c')
+    util.cancel_shutdown(args)
 
     if not args.local:
         logger.info(
@@ -586,13 +452,33 @@ def main():
         assert (util.get_world_size() == dist.get_world_size())
         logger.info(f"Distributed: success ({args.local_rank}/{dist.get_world_size()})")
 
-    model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
-                             args.d_head, args.d_inner, args.dropout, args.dropatt,
-                             tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
-                             tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
-                             ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
-                             same_length=args.same_length, attn_type=args.attn_type,
-                             clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
+    from attrdict import AttrDict
+    state = AttrDict({'model': None,
+                      'optimizer': None,
+                      'mems': None,
+                      'tr_iter': None,
+                      'last_epoch': 1,
+                      'scheduler': None,
+                      'train_step': 0,
+                      'last_log_step': 0,
+                      'token_count': 0,
+                      'best_val_loss': None,
+                      'partial_epoch': False,
+                      })     # state of the optimization that will get restored on checkpoint
+
+    if args.load_state_fn:
+        state = util.load_state(args.load_state_fn)
+
+    if state.model:
+        model: MemTransformerLM = state.model
+    else:
+        model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
+                                 args.d_head, args.d_inner, args.dropout, args.dropatt,
+                                 tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
+                                 tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
+                                 ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
+                                 same_length=args.same_length, attn_type=args.attn_type,
+                                 clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
 
     # log model info
     n_all_param = sum([p.nelement() for p in model.parameters()])
@@ -601,39 +487,46 @@ def main():
     log_tb('sizes/non_emb_params', n_nonemb_param)
     logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
 
-    # optimizer
-    if args.optim.lower() == 'sgd':
-        optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.mom)
-    elif args.optim.lower() == 'lamb':
-        optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    if state.optimizer:
+        optimizer = state.optimizer
     else:
-        assert args.optim.lower() == 'adam'
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-
-    # scheduler
-    if args.scheduler == 'cosine':
-        # Divide by 1e6 for numerical stability.
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens // 1e6, eta_min=args.eta_min)
-    elif args.scheduler == 'finder':
-        scheduler = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
-    elif args.scheduler == 'constant':
-        scheduler = util.NoOp()
+        if args.optim.lower() == 'sgd':
+            optimizer = optim.SGD(state.model.parameters(), lr=args.lr, momentum=args.mom)
+        elif args.optim.lower() == 'lamb':
+            optimizer = Lamb(state.model.parameters(), lr=args.lr, weight_decay=args.wd)
+        else:
+            assert args.optim.lower() == 'adam'
+            optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
     model.apply(weights_init)
     model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
 
-    if args.checkpoint:
-        if global_rank == 0:
-            optimizer_state_dict_fn = ''
-            if args.optim_state_dict:
-                optimizer_state_dict_fn = args.optim_state_dict
-            util.restore_from_checkpoint(model=model,
-                                         optimizer=optimizer,
-                                         checkpoint_fn=args.checkpoint,
-                                         optimizer_state_dict_fn=optimizer_state_dict_fn,
-                                         override_lr=args.lr)
+    # if args.checkpoint:
+    #     if global_rank == 0:
+    #         optimizer_state_dict_fn = ''
+    #         if args.optim_state_dict:
+    #             optimizer_state_dict_fn = args.optim_state_dict
+    #         util.restore_from_checkpoint(model=model,
+    #                                      optimizer=optimizer,
+    #                                      checkpoint_fn=args.checkpoint,
+    #                                      optimizer_state_dict_fn=optimizer_state_dict_fn,
+    #                                      override_lr=args.lr)
+
+    # scheduler
+    if state.scheduler:
+        pass
+    else:
+        if args.scheduler == 'cosine':
+            # Divide by 1e6 for numerical stability.
+            state.scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens // 1e6, eta_min=args.eta_min)
+        elif args.scheduler == 'finder':
+            state.scheduler: LRFinder = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
+        else:
+            assert args.scheduler == 'constant'
+            state.scheduler = util.NoOp()
 
     model = model.to(device)
+    # TODO(y): figure out whether to unwrap them or not
     if args.fp16:
         model = FP16_Module(model)
         optimizer = FP16_Optimizer(optimizer,
@@ -646,42 +539,186 @@ def main():
         model = nn.DataParallel(model, dim=1)
     else:
         # Uncomment find_unused_parameters and upgrade to torch 1.1 for adaptive embedding.
-        model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank) #, find_unused_parameters=True)
+        model = DistributedDataParallel(model, device_ids=[args.local_rank],
+                                        output_device=args.local_rank)  # , find_unused_parameters=True)
 
     if global_rank == 0:
         event_writer = SummaryWriter(args.logdir)
 
-    event_writer.add_text('args', str(args))
+    event_writer.add_text('args', str(args))  # TODO: replace with log_tb
 
-    # test checkpoint writing
-    if args.checkpoint_each_epoch:
-        logger.info(f'Saving checkpoint for epoch {epoch}')
-        util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{0}')
+    # # test checkpoint writing
+    # if args.checkpoint_each_epoch:
+    #     logger.info(f'Saving checkpoint for epoch {epoch}')
+    #     util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{0}')
 
-    # Loop over epochs.
-    train_step = 0
+    # # Loop over epochs.
+    # if not state.train_step:
+    #     state.train_step = 0
+    # if not state.token_count:
+    #     state.token_count = 0
+    # if not state.best_val_loss:
+    #     state.best_val_loss = None
+    # if not state.last_log_step:
+    #     state.last_log_step = 0
+
     train_loss = 0
-    last_log_step = 0
-    best_val_loss = None
     va_iter, te_iter = [
-         corpus.get_dist_iterator(
-            split, bsz=args.batch_size * 2, bptt=args.tgt_len, rank=global_rank, max_rank=max_rank, 
-            device=device, ext_len=args.ext_len)
+        corpus.get_dist_iterator(split, bsz=args.batch_size * 2, bptt=args.tgt_len, rank=global_rank, max_rank=max_rank,
+                                 device=device, ext_len=args.ext_len)
         for split in ('valid', 'test')
     ]
 
     # At any point you can hit Ctrl + C to break out of training early.
     try:
-        for epoch in itertools.count(start=1):
-            train(va_iter, optimizer, scheduler)
+        for epoch in itertools.count(start=state.last_epoch):
+            print('training epoch', epoch)
+            model.train()
+
+            log_tb('sizes/batch_size', args.batch_size)
+            log_tb('sizes/seq_size', args.tgt_len)
+
+            if state.partial_epoch:
+                # reuse previously loaded tr_iter
+                assert state.tr_iter is not None
+                assert state.mems is not None
+            else:
+                state.tr_iter = corpus.get_dist_iterator('train', rank=global_rank, max_rank=max_rank,
+                                                         bsz=args.batch_size, bptt=args.tgt_len, device=device,
+                                                         ext_len=args.ext_len)
+                state.mems = tuple()
+            state.last_epoch = epoch
+
+            log_start_time = time.time()
+            for batch, (data, target, seq_len) in enumerate(state.tr_iter):
+
+                # assert seq_len == data.shape[0]
+                # for i in range(1, data.shape[0]):
+                #     assert torch.all(torch.eq(data[i], target[i - 1]))
+                #     break
+
+                batch_total = torch.tensor(data.shape[1]).to(device)
+                if args.local:
+                    batch_total = batch_total.sum()
+                else:
+                    batch_total = util.dist_sum_tensor(batch_total)  # global batch size
+
+                total_tokens = util.toscalar(batch_total) * seq_len
+                should_log = state.train_step < args.verbose_log_steps or state.train_step % args.log_interval == 0
+
+                state.token_count += total_tokens
+                global_token_count = state.token_count
+                model.zero_grad()
+
+                ret = model(data, target, *state.mems)
+                loss, state.mems = ret[0], ret[1:]
+
+                loss = loss.float().mean().type_as(loss)
+                with timeit('backwards', noop=not should_log):
+                    if args.fp16:
+                        optimizer.backward(loss)
+                    else:
+                        loss.backward()
+                train_loss += loss.float().item()
+
+                if args.fp16:
+                    optimizer.clip_master_grads(args.clip)
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+
+                optimizer.step()
+                state.train_step += 1
+
+                # step-wise learning rate annealing
+                if args.fp16 and optimizer.overflow:
+                    logger.info("skipped iteration")
+                else:
+                    # TODO(y): simplify
+                    if args.scheduler in ['cosine', 'constant', 'dev_perf']:
+                        # linear warmup stage
+                        if state.token_count < args.warmup_tokens:
+                            curr_lr = args.lr * state.token_count / args.warmup_tokens
+                            optimizer.param_groups[0]['lr'] = curr_lr
+                        elif args.scheduler == 'cosine':
+                            # Divide by 1e6 for numerical stability.
+                            state.scheduler.step(state.token_count // 1000 // 1000)
+                    else:
+                        state.scheduler.step(state.token_count)
+
+                if should_log:
+                    elapsed_time = time.time() - log_start_time
+                    elapsed_steps = state.train_step - state.last_log_step
+
+                    # compute average loss over last logging interval
+                    cur_loss = train_loss / elapsed_steps
+                    log_str = f'| epoch {epoch:3d} step {state.train_step:>8d} | {batch:>6d} batches | lr {optimizer.param_groups[0]["lr"]:.3g} ' \
+                        f'| ms/batch {elapsed_time * 1000 / elapsed_steps:5.2f} | loss {cur_loss:5.2f}'
+                    if args.dataset in ['enwik8', 'text8']:
+                        log_str += f' | bpc {cur_loss / math.log(2):9.5f}'
+                    else:
+                        log_str += f' | ppl {math.exp(cur_loss):9.3f}'
+                    logger.info(log_str)
+                    log_tb('learning/epoch', epoch)
+                    log_tb('_loss', cur_loss)  # the most important thing
+                    log_tb('learning/loss', cur_loss)
+                    log_tb('learning/ppl', math.exp(cur_loss))
+
+                    # currently step timings are not synchronized in multi-machine
+                    # case (see #4). Can add torch.distributed.barrier() to get
+                    # more accurate timings, but this may add slowness.
+                    log_tb('times/step', 1000 * elapsed_time / elapsed_steps)
+                    current_lr = optimizer.param_groups[0]['lr']
+
+                    log_tb('learning/lr', current_lr)
+
+                    # 32 is the "canonical" batch size
+                    linear_scaling_factor = batch_total / 32  # TODO(y): merge logic from master
+                    log_tb('learning/base_lr', current_lr / linear_scaling_factor)
+                    if args.optim == 'lamb':
+                        log_lamb_rs(optimizer, event_writer, state.token_count)
+
+                    time_per_batch = elapsed_time / elapsed_steps
+                    time_per_sample = time_per_batch / args.batch_size
+                    time_per_token = time_per_sample / args.tgt_len
+
+                    log_tb('times/batches_per_sec', 1 / time_per_batch)
+                    log_tb('times/samples_per_sec', 1 / time_per_sample)
+                    log_tb('times/tokens_per_sec', 1 / time_per_token)
+
+                    if str(device) == 'cuda':
+                        log_tb("memory/allocated_gb", torch.cuda.memory_allocated() / 1e9)
+                        log_tb("memory/max_allocated_gb", torch.cuda.max_memory_allocated() / 1e9)
+                        log_tb("memory/cached_gb", torch.cuda.memory_cached() / 1e9)
+                        log_tb("memory/max_cached_gb", torch.cuda.max_memory_cached() / 1e9)
+
+                    train_loss = 0
+                    log_start_time = time.time()
+                    state.last_log_step = state.train_step
+
+                if state.train_step % args.eval_interval == 0:
+                    evaluate_and_log(model, optimizer, va_iter, 'val', state.train_step)
+
+                if state.token_count >= args.max_tokens:
+                    state.partial_epoch = True
+                    raise StopIteration  # break out of parent train loop
+
+            if args.checkpoint_each_epoch:
+                logger.info(f'Saving checkpoint for epoch {epoch}')
+                util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{epoch}')
+
+            state.partial_epoch = False
+
     except KeyboardInterrupt:
         logger.info('-' * 100)
         logger.info('Exiting from training early')
     except StopIteration:
         pass
 
+    if args.save_state_fn:
+        util.save_state(state, args.save_state_fn)
+
     # Eval one more time.
-    evaluate_and_log(optimizer, va_iter, 'val', train_step=-1)
+    evaluate_and_log(model, optimizer, va_iter, 'val', state, train_step=-1)
 
     # Load the best saved model.
     logger.info("Loading best checkpoint")
@@ -701,17 +738,17 @@ def main():
         logger.warn('no model file, using current model for loss')
 
     # Run on test data.
-    evaluate_and_log(optimizer, te_iter, 'test', -1)
+    evaluate_and_log(model, optimizer, te_iter, 'test', state, -1)
 
 
 if __name__ == '__main__':
     try:
+        # TODO(y): remove this?
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=UserWarning)
             main()
-        if not args.skip_auto_shutdown and args.local_rank == 0:
-            if not args.local:
-                os.system(f'sudo shutdown -h -P +{args.auto_shutdown_success_delay_mins}')
+        if not args.skip_auto_shutdown and args.local_rank == 0 and not args.local:
+            os.system(f'sudo shutdown -h -P +{args.auto_shutdown_success_delay_mins}')
     except Exception as e:
         import traceback
 
@@ -719,6 +756,5 @@ if __name__ == '__main__':
         # Logger automatically picks up exc info from context.
         logger.exception('Failed')
         # in case of exception, wait 2 hours before shutting down
-        if not args.skip_auto_shutdown:
-            if not args.local:
-                os.system(f'sudo shutdown -h -P +{args.auto_shutdown_failure_delay_mins}')
+        if not args.skip_auto_shutdown and not args.local:
+            os.system(f'sudo shutdown -h -P +{args.auto_shutdown_failure_delay_mins}')

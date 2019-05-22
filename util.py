@@ -12,6 +12,7 @@ def toscalar(t):  # use on python scalars/pytorch scalars
     if hasattr(t, 'item'):
         return t.item()
     else:
+        assert len(t) == 0
         return t[0]
 
 
@@ -130,3 +131,27 @@ def dist_save_checkpoint(ddp_model, optimizer_, directory: str, suffix=''):
         torch.save(ddp_model.module, f_1)
     with open(directory + f'/optimizer-{suffix}.pt', 'wb') as f_1:
         torch.save(optimizer_.state_dict(), f_1)
+
+
+def save_state(state, fn):
+    """Saves"""
+    if get_global_rank() != 0:
+        return
+    if state.model.__class__.__name__ == 'DistributedDataParallel':
+        state.model = state.model.module
+    torch.save(state, fn)
+
+
+def load_state(fn):
+    """Loads state from fn"""
+    if get_global_rank() != 0:
+        return
+    return torch.load(fn)
+
+
+def cancel_shutdown(args):
+    if args.local:
+        return
+    if args.local_rank > 0:
+        return
+    os.system('shutdown -c')
