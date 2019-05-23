@@ -1,34 +1,30 @@
 # coding: utf-8
 #
 import argparse
-import datetime
 import itertools
 import logging
 import math
 import os
 import sys
 import time
-import warnings
 from collections import OrderedDict
 
-from fp16_opt import FP16_Module, FP16_Optimizer
-
 import numpy as np
-import pytz
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
+from pytorch_lamb import Lamb, log_lamb_rs
 from tensorboardX import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel
 
-from data_utils import get_lm_corpus
-from mem_transformer import MemTransformerLM
-from lr_finder import LRFinder
-from pytorch_lamb import Lamb, log_lamb_rs
-from eval import evaluate
-
+import globals as g  # global state current run, shared between modules
 import util
+from data_utils import get_lm_corpus
+from eval import evaluate
+from fp16_opt import FP16_Module, FP16_Optimizer
+from lr_finder import LRFinder
+from mem_transformer import MemTransformerLM
 
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
 parser.add_argument('--logdir', type=str, default='/tmp/default', help="where logs and events go")
@@ -186,16 +182,34 @@ parser.add_argument('--auto_shutdown_success_delay_mins', default=10, type=int,
 parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
                     help='how long to wait before shutting down on error')
 
-args = parser.parse_args()
-args.tied = not args.not_tied
+# testing flags
+parser.add_argument('--checkpoint_test', action='store_true',
+                    help='run checkpoint test')
 
-# global variables
-global_timeit_dict = OrderedDict()
-event_writer = util.NoOp()
-global_token_count = 0
-local_rank = args.local_rank
-global_rank = util.get_global_rank()
-max_rank = util.get_world_size()
+
+def parse_args(cmd_args=sys.argv[1:]):
+    args = parser.parse_args(cmd_args)
+
+    args.tied = not args.not_tied
+
+    if args.d_embed < 0:
+        args.d_embed = args.d_model
+
+    assert args.ext_len >= 0, 'extended context length must be non-negative'
+    # adaptive softmax / embedding
+    g.cutoffs, g.tie_projs = [], [False]
+    if args.adaptive:
+        assert args.dataset in ['wt103', 'lm1b', 'wt2', 'wiki']
+        if args.dataset in ('wt103', 'wt2', 'wiki'):
+            if args.bpe:
+                g.cutoffs = [5000, 10000, 40000]
+            else:
+                g.cutoffs = [20000, 40000, 200000]
+            g.tie_projs += [True] * len(g.cutoffs)
+        elif args.dataset == 'lm1b':
+            g.cutoffs = [60000, 100000, 640000]
+            g.tie_projs += [False] * len(g.cutoffs)
+    return args
 
 
 class FileLogger:
@@ -265,74 +279,60 @@ class timeit:
             return
         self.end = time.perf_counter()
         interval_ms = 1000 * (self.end - self.start)
-        global_timeit_dict.setdefault(self.tag, []).append(interval_ms)
+        g.timeit_dict.setdefault(self.tag, []).append(interval_ms)
         newtag = 'times/' + self.tag
         log_tb(newtag, interval_ms)
 
 
 def log_tb(tag, val):
-    """Log value to tensorboard (relies on global_token_count rather than step count to give comparable graphs across
+    """Log value to tensorboard (relies on g.token_count rather than step count to give comparable graphs across
     batch sizes)"""
-    global event_writer, global_token_count
-    event_writer.add_scalar(tag, val, global_token_count)
+    g.event_writer.add_scalar(tag, val, g.token_count)
 
 
-PT_TZ = pytz.timezone('America/Los_Angeles')
+def initial_setup():
+    """Sets up logging, random seeds and corpus"""
+    # global variables
+    g.logger = FileLogger(g.args.logdir, global_rank=util.get_global_rank(), local_rank=g.args.local_rank)
+    g.logger.info(f"Torch version: {torch.__version__}")
+    g.logger.info('=' * 100)
+    for k, v in g.args.__dict__.items():
+        g.logger.info(f'    - {k} : {v}')
+    g.logger.info('=' * 100)
 
+    g.timeit_dict = OrderedDict()
+    g.event_writer = util.NoOp()
+    g.token_count = 0
 
-def current_timestamp() -> str:
-    # timestamp format like 2019-04-15_11-29-51
-    # correct to local timezone (PDT) if running on AWS (which is UTC)
-    localtime = pytz.utc.localize(datetime.datetime.now(), is_dst=None).astimezone(PT_TZ)
-    return localtime.strftime('%Y-%m-%d_%H-%M-%S')
+    if util.get_global_rank() == 0:
+        g.event_writer = SummaryWriter(g.args.logdir)
+    else:
+        g.event_writer = util.NoOp()   # TB doesn't support multiple processes writing events
 
+    # Set the random seed manually for reproducibility.
+    np.random.seed(g.args.seed)
+    torch.manual_seed(g.args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(g.args.seed)
+        torch.cuda.set_device(g.args.local_rank)
 
-if args.d_embed < 0:
-    args.d_embed = args.d_model
+    g.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-assert args.ext_len >= 0, 'extended context length must be non-negative'
-
-logger = FileLogger(args.logdir, global_rank=global_rank, local_rank=local_rank)
-
-# Set the random seed manually for reproducibility.
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(args.seed)
-    torch.cuda.set_device(args.local_rank)
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-###############################################################################
-# Load data
-###############################################################################
-corpus = get_lm_corpus(args.data, args.dataset, use_bpe=args.bpe)
-ntokens = len(corpus.vocab)
-args.n_token = ntokens
-
-# adaptive softmax / embedding
-cutoffs, tie_projs = [], [False]
-if args.adaptive:
-    assert args.dataset in ['wt103', 'lm1b', 'wt2', 'wiki']
-    if args.dataset in ('wt103', 'wt2', 'wiki'):
-        if args.bpe:
-            cutoffs = [5000, 10000, 40000]
-        else:
-            cutoffs = [20000, 40000, 200000]
-        tie_projs += [True] * len(cutoffs)
-    elif args.dataset == 'lm1b':
-        cutoffs = [60000, 100000, 640000]
-        tie_projs += [False] * len(cutoffs)
+    ###############################################################################
+    # Load data
+    ###############################################################################
+    g.corpus = get_lm_corpus(g.args.data, g.args.dataset, use_bpe=g.args.bpe)
+    g.ntokens = len(g.corpus.vocab)
 
 
 ###############################################################################
 # Build the model
 ###############################################################################
 def init_weight(weight):
-    if args.init == 'uniform':
-        nn.init.uniform_(weight, -args.init_range, args.init_range)
-    elif args.init == 'normal':
-        nn.init.normal_(weight, 0.0, args.init_std)
+    if g.args.init == 'uniform':
+        nn.init.uniform_(weight, -g.args.init_range, g.args.init_range)
+    elif g.args.init == 'normal':
+        nn.init.normal_(weight, 0.0, g.args.init_std)
 
 
 def init_bias(bias):
@@ -350,7 +350,7 @@ def weights_init(m):
         if hasattr(m, 'emb_projs'):
             for i in range(len(m.emb_projs)):
                 if m.emb_projs[i] is not None:
-                    nn.init.normal_(m.emb_projs[i], 0.0, args.proj_init_std)
+                    nn.init.normal_(m.emb_projs[i], 0.0, g.args.proj_init_std)
     elif classname.find('Embedding') != -1:
         if hasattr(m, 'weight'):
             init_weight(m.weight)
@@ -362,10 +362,10 @@ def weights_init(m):
         if hasattr(m, 'out_projs'):
             for i in range(len(m.out_projs)):
                 if m.out_projs[i] is not None:
-                    nn.init.normal_(m.out_projs[i], 0.0, args.proj_init_std)
+                    nn.init.normal_(m.out_projs[i], 0.0, g.args.proj_init_std)
     elif classname.find('LayerNorm') != -1:
         if hasattr(m, 'weight'):
-            nn.init.normal_(m.weight, 1.0, args.init_std)
+            nn.init.normal_(m.weight, 1.0, g.args.init_std)
         if hasattr(m, 'bias') and m.bias is not None:
             init_bias(m.bias)
     elif classname.find('TransformerLM') != -1:
@@ -378,20 +378,13 @@ def weights_init(m):
         if hasattr(m, 'r_bias'):
             init_bias(m.r_bias)
 
-
-logger.info(f"Torch version: {torch.__version__}")
-logger.info('=' * 100)
-for k, v in args.__dict__.items():
-    logger.info(f'    - {k} : {v}')
-logger.info('=' * 100)
-
-
 ###############################################################################
 # Training code
 ###############################################################################
 
 
 def evaluate_and_log(model: torch.nn.Module, optimizer, eval_iter, split, state, train_step=-1):
+    args = g.args
     eval_start_time = time.time()
 
     # Have to unwrap DDP & FP16, if using.
@@ -403,7 +396,7 @@ def evaluate_and_log(model: torch.nn.Module, optimizer, eval_iter, split, state,
     model_to_reset = unwrap(model)
     # If the model does not use memory at all, make the ext_len longer.
     # Otherwise, make the mem_len longer and keep the ext_len the same.
-    if args.mem_len == 0:
+    if g.args.mem_len == 0:
         model_to_reset.reset_length(
             args.eval_tgt_len, args.ext_len + args.tgt_len - args.eval_tgt_len, args.mem_len)
     else:
@@ -418,7 +411,7 @@ def evaluate_and_log(model: torch.nn.Module, optimizer, eval_iter, split, state,
 
     # Log all the things.
     mean_loss = total_loss / total_len
-    logger.info('-' * 100)
+    g.logger.info('-' * 100)
     log_str = (f'| Eval {train_step // args.eval_interval:3d} at step {train_step:>8d} | ' +
                f'time: {time.time() - eval_start_time:5.2f}s ' +
                f'| {split} loss {mean_loss:5.2f}')
@@ -426,31 +419,31 @@ def evaluate_and_log(model: torch.nn.Module, optimizer, eval_iter, split, state,
         log_str += f' | bpc {mean_loss / math.log(2):9.5f}'
     else:
         log_str += f' | {split} ppl {math.exp(mean_loss):9.3f}'
-    logger.info(log_str)
-    logger.info('-' * 100)
+    g.logger.info(log_str)
+    g.logger.info('-' * 100)
     log_tb(f'learning/{split}_loss', mean_loss)
     log_tb(f'learning/{split}_ppl', math.exp(mean_loss))
 
     # Update checkpoint if validation loss improved.
     if split == 'val' and (not state.best_val_loss or mean_loss < state.best_val_loss):
-        logger.info('Saving checkpoint for new best loss')
+        g.logger.info('Saving checkpoint for new best loss')
         util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
         state.best_val_loss = mean_loss
 
 
-def main():
-    global event_writer, train_loss, global_token_count
-
-    util.cancel_shutdown(args)
+def main_loop():
+    args = g.args
+    util.cancel_shutdown()
+    losses = []
 
     if not args.local:
-        logger.info(
+        g.logger.info(
             f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
         dist.init_process_group(backend=args.dist_backend,
                                 init_method=args.dist_url,
                                 world_size=util.get_world_size())
         assert (util.get_world_size() == dist.get_world_size())
-        logger.info(f"Distributed: success ({args.local_rank}/{dist.get_world_size()})")
+        g.logger.info(f"Distributed: success ({args.local_rank}/{dist.get_world_size()})")
 
     from attrdict import AttrDict
     state = AttrDict({'model': None,
@@ -461,31 +454,35 @@ def main():
                       'scheduler': None,
                       'train_step': 0,
                       'last_log_step': 0,
-                      'token_count': 0,
+                      'token_count': 0,    # number of tokens that have been consumed by the model training
                       'best_val_loss': None,
                       'partial_epoch': False,
                       })     # state of the optimization that will get restored on checkpoint
 
     if args.load_state_fn:
         state = util.load_state(args.load_state_fn)
+        g.logger.info(f"Restoring training from {args.load_state_fn}")
 
-    if state.model:
-        model: MemTransformerLM = state.model
     else:
-        model = MemTransformerLM(ntokens, args.n_layer, args.n_head, args.d_model,
-                                 args.d_head, args.d_inner, args.dropout, args.dropatt,
-                                 tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
-                                 tie_projs=tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
-                                 ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=cutoffs,
-                                 same_length=args.same_length, attn_type=args.attn_type,
-                                 clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
+        g.logger.info("creating new model")
+        state.model = MemTransformerLM(g.ntokens, args.n_layer, args.n_head, args.d_model,
+                                       args.d_head, args.d_inner, args.dropout, args.dropatt,
+                                       tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
+                                       tie_projs=g.tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
+                                       ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=g.cutoffs,
+                                       same_length=args.same_length, attn_type=args.attn_type,
+                                       clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
+        state.model.apply(weights_init)
+        state.model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
+
+    model: MemTransformerLM = state.model
 
     # log model info
     n_all_param = sum([p.nelement() for p in model.parameters()])
     log_tb('sizes/params', n_all_param)
     n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
     log_tb('sizes/non_emb_params', n_nonemb_param)
-    logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
+    g.logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
 
     if state.optimizer:
         optimizer = state.optimizer
@@ -497,9 +494,6 @@ def main():
         else:
             assert args.optim.lower() == 'adam'
             optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-
-    model.apply(weights_init)
-    model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
 
     # if args.checkpoint:
     #     if global_rank == 0:
@@ -525,7 +519,7 @@ def main():
             assert args.scheduler == 'constant'
             state.scheduler = util.NoOp()
 
-    model = model.to(device)
+    model = model.to(g.device)
     # TODO(y): figure out whether to unwrap them or not
     if args.fp16:
         model = FP16_Module(model)
@@ -542,30 +536,13 @@ def main():
         model = DistributedDataParallel(model, device_ids=[args.local_rank],
                                         output_device=args.local_rank)  # , find_unused_parameters=True)
 
-    if global_rank == 0:
-        event_writer = SummaryWriter(args.logdir)
+    g.event_writer.add_text('args', str(args))  # TODO: replace with log_tb
 
-    event_writer.add_text('args', str(args))  # TODO: replace with log_tb
-
-    # # test checkpoint writing
-    # if args.checkpoint_each_epoch:
-    #     logger.info(f'Saving checkpoint for epoch {epoch}')
-    #     util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{0}')
-
-    # # Loop over epochs.
-    # if not state.train_step:
-    #     state.train_step = 0
-    # if not state.token_count:
-    #     state.token_count = 0
-    # if not state.best_val_loss:
-    #     state.best_val_loss = None
-    # if not state.last_log_step:
-    #     state.last_log_step = 0
-
-    train_loss = 0
+    accumulated_loss = 0
     va_iter, te_iter = [
-        corpus.get_dist_iterator(split, bsz=args.batch_size * 2, bptt=args.tgt_len, rank=global_rank, max_rank=max_rank,
-                                 device=device, ext_len=args.ext_len)
+        g.corpus.get_dist_iterator(split, bsz=args.batch_size * 2, bptt=args.tgt_len, rank=util.get_global_rank(),
+                                   max_rank=util.get_world_size(),
+                                   device=g.device, ext_len=args.ext_len)
         for split in ('valid', 'test')
     ]
 
@@ -579,26 +556,26 @@ def main():
             log_tb('sizes/seq_size', args.tgt_len)
 
             if state.partial_epoch:
-                # reuse previously loaded tr_iter
+                # reuse previously loaded tr_iter and states
                 assert state.tr_iter is not None
                 assert state.mems is not None
             else:
-                state.tr_iter = corpus.get_dist_iterator('train', rank=global_rank, max_rank=max_rank,
-                                                         bsz=args.batch_size, bptt=args.tgt_len, device=device,
-                                                         ext_len=args.ext_len)
+                state.tr_iter = g.corpus.get_dist_iterator('train', rank=util.get_global_rank(),
+                                                           max_rank=util.get_world_size(),
+                                                           bsz=args.batch_size, bptt=args.tgt_len, device=g.device,
+                                                           ext_len=args.ext_len)
                 state.mems = tuple()
             state.last_epoch = epoch
 
             log_start_time = time.time()
             for batch, (data, target, seq_len) in enumerate(state.tr_iter):
-
                 # assert seq_len == data.shape[0]
                 # for i in range(1, data.shape[0]):
                 #     assert torch.all(torch.eq(data[i], target[i - 1]))
                 #     break
 
-                batch_total = torch.tensor(data.shape[1]).to(device)
-                if args.local:
+                batch_total = torch.tensor(data.shape[1]).to(g.device)
+                if args.local:   # TODO(y): factor out (need way to see if dist was inited)
                     batch_total = batch_total.sum()
                 else:
                     batch_total = util.dist_sum_tensor(batch_total)  # global batch size
@@ -606,8 +583,6 @@ def main():
                 total_tokens = util.toscalar(batch_total) * seq_len
                 should_log = state.train_step < args.verbose_log_steps or state.train_step % args.log_interval == 0
 
-                state.token_count += total_tokens
-                global_token_count = state.token_count
                 model.zero_grad()
 
                 ret = model(data, target, *state.mems)
@@ -619,7 +594,10 @@ def main():
                         optimizer.backward(loss)
                     else:
                         loss.backward()
-                train_loss += loss.float().item()
+                loss0 = util.toscalar(loss)
+                losses.append(loss0)
+                print(g.token_count, losses)
+                accumulated_loss += loss0
 
                 if args.fp16:
                     optimizer.clip_master_grads(args.clip)
@@ -631,7 +609,7 @@ def main():
 
                 # step-wise learning rate annealing
                 if args.fp16 and optimizer.overflow:
-                    logger.info("skipped iteration")
+                    g.logger.info("skipped iteration")
                 else:
                     # TODO(y): simplify
                     if args.scheduler in ['cosine', 'constant', 'dev_perf']:
@@ -645,19 +623,36 @@ def main():
                     else:
                         state.scheduler.step(state.token_count)
 
+
+                # TODO(y): remove total_tokens calculation
+                consumed_tokens = data.shape[0]*data.shape[1]
+                assert total_tokens == consumed_tokens
+                state.token_count += consumed_tokens
+                g.token_count = state.token_count
+                print(g.token_count)
+                if state.token_count >= args.max_tokens:
+                    state.partial_epoch = True
+                    print("Breaking at ", g.token_count)
+                    raise StopIteration  # break out of parent train loop
+
+                if state.train_step % args.eval_interval == 0:
+                    evaluate_and_log(model, optimizer, va_iter, 'val', state.train_step)
+
+                g.logger.info(f"--- {state.token_count}/{args.max_tokens}")
+
                 if should_log:
                     elapsed_time = time.time() - log_start_time
                     elapsed_steps = state.train_step - state.last_log_step
 
                     # compute average loss over last logging interval
-                    cur_loss = train_loss / elapsed_steps
+                    cur_loss = accumulated_loss / elapsed_steps
                     log_str = f'| epoch {epoch:3d} step {state.train_step:>8d} | {batch:>6d} batches | lr {optimizer.param_groups[0]["lr"]:.3g} ' \
                         f'| ms/batch {elapsed_time * 1000 / elapsed_steps:5.2f} | loss {cur_loss:5.2f}'
                     if args.dataset in ['enwik8', 'text8']:
                         log_str += f' | bpc {cur_loss / math.log(2):9.5f}'
                     else:
                         log_str += f' | ppl {math.exp(cur_loss):9.3f}'
-                    logger.info(log_str)
+                    g.logger.info(log_str)
                     log_tb('learning/epoch', epoch)
                     log_tb('_loss', cur_loss)  # the most important thing
                     log_tb('learning/loss', cur_loss)
@@ -675,7 +670,7 @@ def main():
                     linear_scaling_factor = batch_total / 32  # TODO(y): merge logic from master
                     log_tb('learning/base_lr', current_lr / linear_scaling_factor)
                     if args.optim == 'lamb':
-                        log_lamb_rs(optimizer, event_writer, state.token_count)
+                        log_lamb_rs(optimizer, g.event_writer, state.token_count)
 
                     time_per_batch = elapsed_time / elapsed_steps
                     time_per_sample = time_per_batch / args.batch_size
@@ -685,32 +680,27 @@ def main():
                     log_tb('times/samples_per_sec', 1 / time_per_sample)
                     log_tb('times/tokens_per_sec', 1 / time_per_token)
 
-                    if str(device) == 'cuda':
+                    if str(g.device) == 'cuda':
                         log_tb("memory/allocated_gb", torch.cuda.memory_allocated() / 1e9)
                         log_tb("memory/max_allocated_gb", torch.cuda.max_memory_allocated() / 1e9)
                         log_tb("memory/cached_gb", torch.cuda.memory_cached() / 1e9)
                         log_tb("memory/max_cached_gb", torch.cuda.max_memory_cached() / 1e9)
 
-                    train_loss = 0
+                    accumulated_loss = 0
                     log_start_time = time.time()
                     state.last_log_step = state.train_step
 
-                if state.train_step % args.eval_interval == 0:
-                    evaluate_and_log(model, optimizer, va_iter, 'val', state.train_step)
-
-                if state.token_count >= args.max_tokens:
-                    state.partial_epoch = True
-                    raise StopIteration  # break out of parent train loop
+            # end of epoch loop
 
             if args.checkpoint_each_epoch:
-                logger.info(f'Saving checkpoint for epoch {epoch}')
+                g.logger.info(f'Saving checkpoint for epoch {epoch}')
                 util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{epoch}')
 
             state.partial_epoch = False
 
     except KeyboardInterrupt:
-        logger.info('-' * 100)
-        logger.info('Exiting from training early')
+        g.logger.info('-' * 100)
+        g.logger.info('Exiting from training early')
     except StopIteration:
         pass
 
@@ -721,8 +711,8 @@ def main():
     evaluate_and_log(model, optimizer, va_iter, 'val', state, train_step=-1)
 
     # Load the best saved model.
-    logger.info("Loading best checkpoint")
     model_file = os.path.join(args.logdir, 'model-best.pt')
+    g.logger.info("Loading best checkpoint")
     if os.path.exists(model_file):
         with open(model_file, 'rb') as model_f:
             with timeit('load'):
@@ -735,26 +725,64 @@ def main():
                         device_ids=[args.local_rank],
                         output_device=args.local_rank)
     else:
-        logger.warn('no model file, using current model for loss')
+        g.logger.warn('no model file, using current model for loss')
 
     # Run on test data.
     evaluate_and_log(model, optimizer, te_iter, 'test', state, -1)
 
+    return losses
+
+
+def run_checkpoint_test():
+    # run all the way through
+    cmd_args = "--local --data=testdata --batch_size=1 " \
+               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=12 --tgt_len=2 --scheduler=constant "
+    g.args = parse_args(cmd_args.split())
+    initial_setup()
+    losses1 = main_loop()
+
+    # run halfway and save checkpoint
+    cmd_args = "--local --data=testdata --batch_size=1 " \
+               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=6 --tgt_len=2 --scheduler=constant " \
+               "--save_state_fn=/tmp/state.pt"
+    g.args = parse_args(cmd_args.split())
+    initial_setup()
+    losses2 = main_loop()
+
+    # restore from checkpoint and continue to the end
+    cmd_args = "--local --data=testdata --batch_size=1 " \
+               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=12 --tgt_len=2 --scheduler=constant " \
+               "--load_state_fn=/tmp/state.pt"
+    g.args = parse_args(cmd_args.split())
+    initial_setup()
+    losses3 = main_loop()
+
+    target_loss = losses1[-1]
+    observed_loss = losses3[-1]
+    print(abs(target_loss-observed_loss)/target_loss)
+    print(losses1)
+    print(losses2)
+    print(losses3)
+    assert abs(target_loss-observed_loss)/target_loss < 1e-5
+
 
 if __name__ == '__main__':
-    try:
-        # TODO(y): remove this?
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=UserWarning)
-            main()
-        if not args.skip_auto_shutdown and args.local_rank == 0 and not args.local:
-            os.system(f'sudo shutdown -h -P +{args.auto_shutdown_success_delay_mins}')
-    except Exception as e:
-        import traceback
+    current_args = parse_args()
+    if current_args.checkpoint_test:
+        run_checkpoint_test()
+    else:
+        g.args = current_args
+        initial_setup()
+        try:
+            main_loop()
+            if not g.args.skip_auto_shutdown and g.args.local_rank == 0 and not g.args.local:
+                os.system(f'sudo shutdown -h -P +{g.args.auto_shutdown_success_delay_mins}')
+        except Exception as e:
+            import traceback
 
-        traceback.print_exc(file=sys.stdout)
-        # Logger automatically picks up exc info from context.
-        logger.exception('Failed')
-        # in case of exception, wait 2 hours before shutting down
-        if not args.skip_auto_shutdown and not args.local:
-            os.system(f'sudo shutdown -h -P +{args.auto_shutdown_failure_delay_mins}')
+            traceback.print_exc(file=sys.stdout)
+            # Logger automatically picks up exc info from context.
+            g.logger.exception('Failed')
+            # in case of exception, wait 2 hours before shutting down
+            if not g.args.skip_auto_shutdown and not g.args.local:
+                os.system(f'sudo shutdown -h -P +{g.args.auto_shutdown_failure_delay_mins}')

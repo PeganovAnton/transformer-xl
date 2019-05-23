@@ -17,10 +17,9 @@ class LMOrderedIterator:
             data -- LongTensor -- the LongTensor is strictly ordered
             offset -- batch index offset
         """
-        self.offset = offset
-        self.batch_idx = 0
-        self.bsz = bsz     # batch size
-        self.bptt = bptt   # context length (ie, tgt_len)
+        self.offset = offset  # start iterating at this token
+        self.bsz = bsz      # batch size
+        self.bptt = bptt    # context length (ie, tgt_len)
         self.ext_len = ext_len if ext_len is not None else 0
 
         self.device = device
@@ -57,7 +56,7 @@ class LMOrderedIterator:
 
     def __iter__(self):
         for i in range(self.offset, self.data.size(0) - 1, self.bptt):
-            self.batch_idx = i
+            self.offset = i + self.bptt   # this ensures iter remembers position on unpickling
             yield self.get_batch(i)
 
 

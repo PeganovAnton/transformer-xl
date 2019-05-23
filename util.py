@@ -1,14 +1,19 @@
+import datetime
 import os
 import sys
 
 import torch
 import torch.distributed as dist
 
+import globals as g
+
 
 def toscalar(t):  # use on python scalars/pytorch scalars
     """Converts Python scalar or PyTorch tensor to Python scalar"""
     if isinstance(t, (float, int)):
         return t
+    if hasattr(t, 'float'):
+        t = t.float()   # half not supported on CPU
     if hasattr(t, 'item'):
         return t.item()
     else:
@@ -149,9 +154,17 @@ def load_state(fn):
     return torch.load(fn)
 
 
-def cancel_shutdown(args):
+def cancel_shutdown():
+    args = g.args
     if args.local:
         return
     if args.local_rank > 0:
         return
     os.system('shutdown -c')
+
+
+def current_timestamp(timezone: str = 'America/Los_Angeles') -> str:
+    """Gives timestamp formated like 2019-04-15_11-29-51. correct to local timezone (PDT) if running on AWS (which is UTC)"""
+    pacific_tz = pytz.timezone(timezone)
+    localtime = pytz.utc.localize(datetime.datetime.now(), is_dst=None).astimezone(pacific_tz)
+    return localtime.strftime('%Y-%m-%d_%H-%M-%S')
