@@ -290,16 +290,13 @@ def log_tb(tag, val):
     g.event_writer.add_scalar(tag, val, g.token_count)
 
 
-def initial_setup():
-    """Sets up logging, random seeds and corpus"""
-    # global variables
+def logging_setup():
     g.logger = FileLogger(g.args.logdir, global_rank=util.get_global_rank(), local_rank=g.args.local_rank)
     g.logger.info(f"Torch version: {torch.__version__}")
     g.logger.info('=' * 100)
     for k, v in g.args.__dict__.items():
         g.logger.info(f'    - {k} : {v}')
     g.logger.info('=' * 100)
-
     g.timeit_dict = OrderedDict()
     g.event_writer = util.NoOp()
     g.token_count = 0
@@ -309,6 +306,10 @@ def initial_setup():
     else:
         g.event_writer = util.NoOp()   # TB doesn't support multiple processes writing events
 
+
+def data_setup():
+    """Sets up logging, random seeds and corpus"""
+    # global variables
     # Set the random seed manually for reproducibility.
     np.random.seed(g.args.seed)
     torch.manual_seed(g.args.seed)
@@ -738,7 +739,8 @@ def run_checkpoint_test():
     cmd_args = "--local --data=testdata --batch_size=1 " \
                "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=12 --tgt_len=2 --scheduler=constant "
     g.args = parse_args(cmd_args.split())
-    initial_setup()
+    logging_setup()
+    data_setup()
     losses1 = main_loop()
 
     # run halfway and save checkpoint
@@ -746,7 +748,7 @@ def run_checkpoint_test():
                "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=6 --tgt_len=2 --scheduler=constant " \
                "--save_state_fn=/tmp/state.pt"
     g.args = parse_args(cmd_args.split())
-    initial_setup()
+    data_setup()
     losses2 = main_loop()
 
     # restore from checkpoint and continue to the end
@@ -754,7 +756,7 @@ def run_checkpoint_test():
                "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=12 --tgt_len=2 --scheduler=constant " \
                "--load_state_fn=/tmp/state.pt"
     g.args = parse_args(cmd_args.split())
-    initial_setup()
+    data_setup()
     losses3 = main_loop()
 
     target_loss = losses1[-1]
