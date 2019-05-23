@@ -171,7 +171,7 @@ class FP16_Optimizer(object):
                  dynamic_loss_scale=False,
                  dynamic_loss_args=None,
                  verbose=False):
-        if not torch.cuda.is_available:
+        if not torch.cuda.is_available():
             raise SystemError("Cannot use fp16 without CUDA.")
 
         self.verbose = verbose
