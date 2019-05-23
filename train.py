@@ -722,29 +722,21 @@ def run_checkpoint_test():
     losses1 = main_loop()
 
     # run halfway and save checkpoint
-    cmd_args = "--local --data=testdata --batch_size=1 " \
-               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=2 --tgt_len=1 --scheduler=constant " \
-               "--save_state_fn=/tmp/state.pt"
-    g.args = parse_args(cmd_args.split())
-    # data_setup()
-    data_setup()
+    g.args.max_tokens = 2
+    g.args.save_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
     losses2 = main_loop()
     util.save_state(g.state, g.args.save_state_fn)
 
     # restore from checkpoint and continue to the end
-    cmd_args = "--local --data=testdata --batch_size=1 " \
-               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=4 --tgt_len=1 --scheduler=constant " \
-               "--load_state_fn=/tmp/state.pt"
-    g.args = parse_args(cmd_args.split())
+    g.args.max_tokens = 4
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
     losses3 = main_loop()
 
-    target_loss = losses1[-1]
-    observed_loss = losses3[-1]
-    print(abs(target_loss - observed_loss) / target_loss)
-    print(losses1)
-    print(losses2)
-    print(losses3)
-    assert abs(target_loss - observed_loss) / target_loss < 1e-5
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
 
 
 if __name__ == '__main__':

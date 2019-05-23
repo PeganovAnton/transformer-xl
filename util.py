@@ -168,3 +168,11 @@ def current_timestamp(timezone: str = 'America/Los_Angeles') -> str:
     pacific_tz = pytz.timezone(timezone)
     localtime = pytz.utc.localize(datetime.datetime.now(), is_dst=None).astimezone(pacific_tz)
     return localtime.strftime('%Y-%m-%d_%H-%M-%S')
+
+
+def assert_close(observed, target, rtol=1e-5, atol=1e-3):
+    relative = abs(target-observed)/target
+    assert relative < rtol, f"rtol {rtol} exceeded at {relative}, observed={observed}, target={target}"
+
+    absolute = abs(target-observed)
+    assert absolute < rtol, f"atol {atol} exceeded at {absolute}, observed={observed}, target={target}"
