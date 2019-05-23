@@ -304,7 +304,7 @@ def logging_setup():
     if util.get_global_rank() == 0:
         g.event_writer = SummaryWriter(g.args.logdir)
     else:
-        g.event_writer = util.NoOp()   # TB doesn't support multiple processes writing events
+        g.event_writer = util.NoOp()  # TB doesn't support multiple processes writing events
 
 
 def data_setup():
@@ -324,6 +324,13 @@ def data_setup():
     ###############################################################################
     g.corpus = get_lm_corpus(g.args.data, g.args.dataset, use_bpe=g.args.bpe)
     g.ntokens = len(g.corpus.vocab)
+
+    g.va_iter, g.te_iter = [
+        g.corpus.get_dist_iterator(split, bsz=g.args.batch_size * 2, bptt=g.args.tgt_len, rank=util.get_global_rank(),
+                                   max_rank=util.get_world_size(),
+                                   device=g.device, ext_len=g.args.ext_len)
+        for split in ('valid', 'test')
+    ]
 
 
 ###############################################################################
@@ -379,13 +386,16 @@ def weights_init(m):
         if hasattr(m, 'r_bias'):
             init_bias(m.r_bias)
 
+
 ###############################################################################
 # Training code
 ###############################################################################
 
 
-def evaluate_and_log(model: torch.nn.Module, optimizer, eval_iter, split, state, train_step=-1):
+def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
     args = g.args
+    state = g.state
+    optimizer = g.state.optimizer
     eval_start_time = time.time()
 
     # Have to unwrap DDP & FP16, if using.
@@ -413,7 +423,7 @@ def evaluate_and_log(model: torch.nn.Module, optimizer, eval_iter, split, state,
     # Log all the things.
     mean_loss = total_loss / total_len
     g.logger.info('-' * 100)
-    log_str = (f'| Eval {train_step // args.eval_interval:3d} at step {train_step:>8d} | ' +
+    log_str = (f'| Eval {g.state.train_step // args.eval_interval:3d} at step {g.state.train_step:>8d} | ' +
                f'time: {time.time() - eval_start_time:5.2f}s ' +
                f'| {split} loss {mean_loss:5.2f}')
     if args.dataset in ['enwik8', 'text8']:
@@ -455,15 +465,14 @@ def main_loop():
                       'scheduler': None,
                       'train_step': 0,
                       'last_log_step': 0,
-                      'token_count': 0,    # number of tokens that have been consumed by the model training
+                      'token_count': 0,  # number of tokens that have been consumed by the model training
                       'best_val_loss': None,
                       'partial_epoch': False,
-                      })     # state of the optimization that will get restored on checkpoint
+                      })  # state of the optimization that will get restored on checkpoint
 
     if args.load_state_fn:
         state = util.load_state(args.load_state_fn)
         g.logger.info(f"Restoring training from {args.load_state_fn}")
-
     else:
         g.logger.info("creating new model")
         state.model = MemTransformerLM(g.ntokens, args.n_layer, args.n_head, args.d_model,
@@ -474,8 +483,9 @@ def main_loop():
                                        same_length=args.same_length, attn_type=args.attn_type,
                                        clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
         state.model.apply(weights_init)
-        state.model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
-
+        state.model.word_emb.apply(
+            weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
+    g.state = state
     model: MemTransformerLM = state.model
 
     # log model info
@@ -485,9 +495,7 @@ def main_loop():
     log_tb('sizes/non_emb_params', n_nonemb_param)
     g.logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
 
-    if state.optimizer:
-        optimizer = state.optimizer
-    else:
+    if not state.optimizer:
         if args.optim.lower() == 'sgd':
             optimizer = optim.SGD(state.model.parameters(), lr=args.lr, momentum=args.mom)
         elif args.optim.lower() == 'lamb':
@@ -495,6 +503,8 @@ def main_loop():
         else:
             assert args.optim.lower() == 'adam'
             optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
+        state.optimizer = optimizer
+    optimizer = state.optimizer
 
     # if args.checkpoint:
     #     if global_rank == 0:
@@ -513,7 +523,8 @@ def main_loop():
     else:
         if args.scheduler == 'cosine':
             # Divide by 1e6 for numerical stability.
-            state.scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens // 1e6, eta_min=args.eta_min)
+            state.scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens // 1e6,
+                                                                   eta_min=args.eta_min)
         elif args.scheduler == 'finder':
             state.scheduler: LRFinder = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
         else:
@@ -529,6 +540,7 @@ def main_loop():
                                    dynamic_loss_scale=args.dynamic_loss_scale,
                                    dynamic_loss_args={'init_scale': 2 ** 16},
                                    verbose=False)
+        # TODO(y) save back into state.optimizer
 
     if args.local:
         model = nn.DataParallel(model, dim=1)
@@ -540,13 +552,6 @@ def main_loop():
     g.event_writer.add_text('args', str(args))  # TODO: replace with log_tb
 
     accumulated_loss = 0
-    va_iter, te_iter = [
-        g.corpus.get_dist_iterator(split, bsz=args.batch_size * 2, bptt=args.tgt_len, rank=util.get_global_rank(),
-                                   max_rank=util.get_world_size(),
-                                   device=g.device, ext_len=args.ext_len)
-        for split in ('valid', 'test')
-    ]
-
     # At any point you can hit Ctrl + C to break out of training early.
     try:
         for epoch in itertools.count(start=state.last_epoch):
@@ -576,7 +581,7 @@ def main_loop():
                 #     break
 
                 batch_total = torch.tensor(data.shape[1]).to(g.device)
-                if args.local:   # TODO(y): factor out (need way to see if dist was inited)
+                if args.local:  # TODO(y): factor out (need way to see if dist was inited)
                     batch_total = batch_total.sum()
                 else:
                     batch_total = util.dist_sum_tensor(batch_total)  # global batch size
@@ -624,9 +629,8 @@ def main_loop():
                     else:
                         state.scheduler.step(state.token_count)
 
-
                 # TODO(y): remove total_tokens calculation
-                consumed_tokens = data.shape[0]*data.shape[1]
+                consumed_tokens = data.shape[0] * data.shape[1]
                 assert total_tokens == consumed_tokens
                 state.token_count += consumed_tokens
                 g.token_count = state.token_count
@@ -637,7 +641,7 @@ def main_loop():
                     raise StopIteration  # break out of parent train loop
 
                 if state.train_step % args.eval_interval == 0:
-                    evaluate_and_log(model, optimizer, va_iter, 'val', state.train_step)
+                    evaluate_and_log(model, g.va_iter, 'val')
 
                 g.logger.info(f"--- {state.token_count}/{args.max_tokens}")
 
@@ -705,39 +709,13 @@ def main_loop():
     except StopIteration:
         pass
 
-    if args.save_state_fn:
-        util.save_state(state, args.save_state_fn)
-
-    # Eval one more time.
-    evaluate_and_log(model, optimizer, va_iter, 'val', state, train_step=-1)
-
-    # Load the best saved model.
-    model_file = os.path.join(args.logdir, 'model-best.pt')
-    g.logger.info("Loading best checkpoint")
-    if os.path.exists(model_file):
-        with open(model_file, 'rb') as model_f:
-            with timeit('load'):
-                if args.local:
-                    model = torch.load(model_f)
-                else:
-                    model = torch.load(model_f, map_location=lambda storage, loc: storage.cuda(args.local_rank))
-                    model = DistributedDataParallel(
-                        model,
-                        device_ids=[args.local_rank],
-                        output_device=args.local_rank)
-    else:
-        g.logger.warn('no model file, using current model for loss')
-
-    # Run on test data.
-    evaluate_and_log(model, optimizer, te_iter, 'test', state, -1)
-
     return losses
 
 
 def run_checkpoint_test():
     # run all the way through
     cmd_args = "--local --data=testdata --batch_size=1 " \
-               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=12 --tgt_len=2 --scheduler=constant "
+               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=4 --tgt_len=1 --scheduler=constant "
     g.args = parse_args(cmd_args.split())
     logging_setup()
     data_setup()
@@ -745,27 +723,28 @@ def run_checkpoint_test():
 
     # run halfway and save checkpoint
     cmd_args = "--local --data=testdata --batch_size=1 " \
-               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=6 --tgt_len=2 --scheduler=constant " \
+               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=2 --tgt_len=1 --scheduler=constant " \
                "--save_state_fn=/tmp/state.pt"
     g.args = parse_args(cmd_args.split())
+    # data_setup()
     data_setup()
     losses2 = main_loop()
+    util.save_state(g.state, g.args.save_state_fn)
 
     # restore from checkpoint and continue to the end
     cmd_args = "--local --data=testdata --batch_size=1 " \
-               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=12 --tgt_len=2 --scheduler=constant " \
+               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=4 --tgt_len=1 --scheduler=constant " \
                "--load_state_fn=/tmp/state.pt"
     g.args = parse_args(cmd_args.split())
-    data_setup()
     losses3 = main_loop()
 
     target_loss = losses1[-1]
     observed_loss = losses3[-1]
-    print(abs(target_loss-observed_loss)/target_loss)
+    print(abs(target_loss - observed_loss) / target_loss)
     print(losses1)
     print(losses2)
     print(losses3)
-    assert abs(target_loss-observed_loss)/target_loss < 1e-5
+    assert abs(target_loss - observed_loss) / target_loss < 1e-5
 
 
 if __name__ == '__main__':
@@ -774,9 +753,37 @@ if __name__ == '__main__':
         run_checkpoint_test()
     else:
         g.args = current_args
-        initial_setup()
+        logging_setup()
+        data_setup()
         try:
             main_loop()
+            if g.args.save_state_fn:
+                util.save_state(g.state, g.args.save_state_fn)
+
+            # Eval one more time.
+            evaluate_and_log(g.state.model, g.va_iter, 'val')
+
+            # Load the best saved model.
+            model_file = os.path.join(g.args.logdir, 'model-best.pt')
+            g.logger.info("Loading best checkpoint")
+            if os.path.exists(model_file):
+                with open(model_file, 'rb') as model_f:
+                    with timeit('load'):
+                        if g.args.local:
+                            g.state.model = torch.load(model_f)
+                        else:
+                            g.state.model = torch.load(model_f, map_location=lambda storage, loc: storage.cuda(
+                                g.args.local_rank))
+                            g.state.model = DistributedDataParallel(
+                                g.state.model,
+                                device_ids=[g.args.local_rank],
+                                output_device=g.args.local_rank)
+            else:
+                g.logger.warn('no model file, using current model for loss')
+
+            # Run on test data.
+            evaluate_and_log(g.state.model, g.te_iter, 'test')
+
             if not g.args.skip_auto_shutdown and g.args.local_rank == 0 and not g.args.local:
                 os.system(f'sudo shutdown -h -P +{g.args.auto_shutdown_success_delay_mins}')
         except Exception as e:

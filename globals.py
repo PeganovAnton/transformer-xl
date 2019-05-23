@@ -4,9 +4,15 @@ token_count = None
 args = None
 timeit_dict = None
 logger = None
+
 corpus = None
+va_iter = None
+te_iter = None
+
 
 tie_projs = None
 cutoffs = None
 ntokens = None
 device = None
+state = None  # saveable state of optimization (model, optimizer, step, etc)
+
