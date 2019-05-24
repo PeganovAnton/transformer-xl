@@ -183,8 +183,7 @@ parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
                     help='how long to wait before shutting down on error')
 
 # testing flags
-parser.add_argument('--checkpoint_test', action='store_true',
-                    help='run checkpoint test')
+parser.add_argument('--test', type=str, default='', help='run test')
 
 
 def parse_args(cmd_args=sys.argv[1:]):
@@ -443,9 +442,10 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
 
 
 def main_loop():
-    args = g.args
     util.cancel_shutdown()
     losses = []
+
+    args = g.args
 
     if not args.local:
         g.logger.info(
@@ -457,36 +457,43 @@ def main_loop():
         g.logger.info(f"Distributed: success ({args.local_rank}/{dist.get_world_size()})")
 
     from attrdict import AttrDict
-    state = AttrDict({'model': None,
-                      'optimizer': None,
-                      'mems': None,
-                      'tr_iter': None,
-                      'last_epoch': 1,
-                      'scheduler': None,
-                      'train_step': 0,
-                      'last_log_step': 0,
-                      'token_count': 0,  # number of tokens that have been consumed by the model training
-                      'best_val_loss': None,
-                      'partial_epoch': False,
-                      })  # state of the optimization that will get restored on checkpoint
-
-    if args.load_state_fn:
-        state = util.load_state(args.load_state_fn)
+    if g.args.load_state_fn:
+        g.state = util.load_state(args.load_state_fn)
         g.logger.info(f"Restoring training from {args.load_state_fn}")
+
+        # Some objects like FP16_Optimizer can't be pickled, so we must recreate them by following the same procedure
+        # as before. This procedure depends on some args, so those args are also restored from the state.
+        util.merge_args_from_state(g.args, g.state)
+        args = g.args  # todo(y): not needed?
     else:
         g.logger.info("creating new model")
-        state.model = MemTransformerLM(g.ntokens, args.n_layer, args.n_head, args.d_model,
-                                       args.d_head, args.d_inner, args.dropout, args.dropatt,
-                                       tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
-                                       tie_projs=g.tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
-                                       ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=g.cutoffs,
-                                       same_length=args.same_length, attn_type=args.attn_type,
-                                       clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
-        state.model.apply(weights_init)
-        state.model.word_emb.apply(
+        g.state = AttrDict({'model': None,
+                            'optimizer': None,
+                            'mems': None,
+                            'tr_iter': None,
+                            'last_epoch': 1,
+                            'scheduler': None,
+                            'train_step': 0,
+                            'last_log_step': 0,
+                            'token_count': 0,  # number of tokens that have been consumed by the model training
+                            'best_val_loss': None,
+                            'partial_epoch': False,
+                            'fp16_optimizer_state_dict': None,
+                            'args': args
+                            })  # state of the optimization that will get restored on checkpoint
+
+        g.state.model = MemTransformerLM(g.ntokens, args.n_layer, args.n_head, args.d_model,
+                                         args.d_head, args.d_inner, args.dropout, args.dropatt,
+                                         tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
+                                         tie_projs=g.tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
+                                         ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=g.cutoffs,
+                                         same_length=args.same_length, attn_type=args.attn_type,
+                                         clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
+        g.state.model.apply(weights_init)
+        g.state.model.word_emb.apply(
             weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
-    g.state = state
-    model: MemTransformerLM = state.model
+
+    model: MemTransformerLM = g.state.model
 
     # log model info
     n_all_param = sum([p.nelement() for p in model.parameters()])
@@ -495,44 +502,33 @@ def main_loop():
     log_tb('sizes/non_emb_params', n_nonemb_param)
     g.logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
 
-    if not state.optimizer:
+    # create optimizer
+    if not g.args.load_state_fn:
         if args.optim.lower() == 'sgd':
-            optimizer = optim.SGD(state.model.parameters(), lr=args.lr, momentum=args.mom)
+            optimizer = optim.SGD(g.state.model.parameters(), lr=args.lr, momentum=args.mom)
         elif args.optim.lower() == 'lamb':
-            optimizer = Lamb(state.model.parameters(), lr=args.lr, weight_decay=args.wd)
+            optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
         else:
             assert args.optim.lower() == 'adam'
             optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-        state.optimizer = optimizer
-    optimizer = state.optimizer
-
-    # if args.checkpoint:
-    #     if global_rank == 0:
-    #         optimizer_state_dict_fn = ''
-    #         if args.optim_state_dict:
-    #             optimizer_state_dict_fn = args.optim_state_dict
-    #         util.restore_from_checkpoint(model=model,
-    #                                      optimizer=optimizer,
-    #                                      checkpoint_fn=args.checkpoint,
-    #                                      optimizer_state_dict_fn=optimizer_state_dict_fn,
-    #                                      override_lr=args.lr)
+        g.state.optimizer = optimizer
+    optimizer = g.state.optimizer
 
     # scheduler
-    if state.scheduler:
-        pass
-    else:
+    if not g.args.load_state_fn:
         if args.scheduler == 'cosine':
             # Divide by 1e6 for numerical stability.
-            state.scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens // 1e6,
-                                                                   eta_min=args.eta_min)
+            g.state.scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens // 1e6,
+                                                                     eta_min=args.eta_min)
         elif args.scheduler == 'finder':
-            state.scheduler: LRFinder = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
+            g.state.scheduler: LRFinder = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
         else:
             assert args.scheduler == 'constant'
-            state.scheduler = util.NoOp()
+            g.state.scheduler = util.NoOp()
 
     model = model.to(g.device)
-    # TODO(y): figure out whether to unwrap them or not
+
+    # fp16 wrapper
     if args.fp16:
         model = FP16_Module(model)
         optimizer = FP16_Optimizer(optimizer,
@@ -540,8 +536,10 @@ def main_loop():
                                    dynamic_loss_scale=args.dynamic_loss_scale,
                                    dynamic_loss_args={'init_scale': 2 ** 16},
                                    verbose=False)
-        # TODO(y) save back into state.optimizer
+    g.state.model = model
+    g.state.optimizer = optimizer
 
+    # Setup distributed model
     if args.local:
         model = nn.DataParallel(model, dim=1)
     else:
@@ -554,27 +552,27 @@ def main_loop():
     accumulated_loss = 0
     # At any point you can hit Ctrl + C to break out of training early.
     try:
-        for epoch in itertools.count(start=state.last_epoch):
+        for epoch in itertools.count(start=g.state.last_epoch):
             print('training epoch', epoch)
             model.train()
 
             log_tb('sizes/batch_size', args.batch_size)
             log_tb('sizes/seq_size', args.tgt_len)
 
-            if state.partial_epoch:
+            if g.state.partial_epoch:
                 # reuse previously loaded tr_iter and states
-                assert state.tr_iter is not None
-                assert state.mems is not None
+                assert g.state.tr_iter is not None
+                assert g.state.mems is not None
             else:
-                state.tr_iter = g.corpus.get_dist_iterator('train', rank=util.get_global_rank(),
-                                                           max_rank=util.get_world_size(),
-                                                           bsz=args.batch_size, bptt=args.tgt_len, device=g.device,
-                                                           ext_len=args.ext_len)
-                state.mems = tuple()
-            state.last_epoch = epoch
+                g.state.tr_iter = g.corpus.get_dist_iterator('train', rank=util.get_global_rank(),
+                                                             max_rank=util.get_world_size(),
+                                                             bsz=args.batch_size, bptt=args.tgt_len, device=g.device,
+                                                             ext_len=args.ext_len)
+                g.state.mems = tuple()
+            g.state.last_epoch = epoch
 
             log_start_time = time.time()
-            for batch, (data, target, seq_len) in enumerate(state.tr_iter):
+            for batch, (data, target, seq_len) in enumerate(g.state.tr_iter):
                 # assert seq_len == data.shape[0]
                 # for i in range(1, data.shape[0]):
                 #     assert torch.all(torch.eq(data[i], target[i - 1]))
@@ -587,12 +585,12 @@ def main_loop():
                     batch_total = util.dist_sum_tensor(batch_total)  # global batch size
 
                 total_tokens = util.toscalar(batch_total) * seq_len
-                should_log = state.train_step < args.verbose_log_steps or state.train_step % args.log_interval == 0
+                should_log = g.state.train_step < args.verbose_log_steps or (g.state.train_step+1) % args.log_interval == 0
 
                 model.zero_grad()
 
-                ret = model(data, target, *state.mems)
-                loss, state.mems = ret[0], ret[1:]
+                ret = model(data, target, *g.state.mems)
+                loss, g.state.mems = ret[0], ret[1:]
 
                 loss = loss.float().mean().type_as(loss)
                 with timeit('backwards', noop=not should_log):
@@ -602,7 +600,6 @@ def main_loop():
                         loss.backward()
                 loss0 = util.toscalar(loss)
                 losses.append(loss0)
-                print(g.token_count, losses)
                 accumulated_loss += loss0
 
                 if args.fp16:
@@ -611,7 +608,7 @@ def main_loop():
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
                 optimizer.step()
-                state.train_step += 1
+                g.state.train_step += 1
 
                 # step-wise learning rate annealing
                 if args.fp16 and optimizer.overflow:
@@ -620,38 +617,34 @@ def main_loop():
                     # TODO(y): simplify
                     if args.scheduler in ['cosine', 'constant', 'dev_perf']:
                         # linear warmup stage
-                        if state.token_count < args.warmup_tokens:
-                            curr_lr = args.lr * state.token_count / args.warmup_tokens
+                        if g.state.token_count < args.warmup_tokens:
+                            curr_lr = args.lr * g.state.token_count / args.warmup_tokens
                             optimizer.param_groups[0]['lr'] = curr_lr
                         elif args.scheduler == 'cosine':
                             # Divide by 1e6 for numerical stability.
-                            state.scheduler.step(state.token_count // 1000 // 1000)
+                            g.state.scheduler.step(g.state.token_count // 1000 // 1000)
                     else:
-                        state.scheduler.step(state.token_count)
+                        g.state.scheduler.step(g.state.token_count)
 
                 # TODO(y): remove total_tokens calculation
                 consumed_tokens = data.shape[0] * data.shape[1]
                 assert total_tokens == consumed_tokens
-                state.token_count += consumed_tokens
-                g.token_count = state.token_count
-                print(g.token_count)
-                if state.token_count >= args.max_tokens:
-                    state.partial_epoch = True
-                    print("Breaking at ", g.token_count)
+                g.state.token_count += consumed_tokens
+                g.token_count = g.state.token_count
+                if g.state.token_count >= args.max_tokens:
+                    g.state.partial_epoch = True
                     raise StopIteration  # break out of parent train loop
 
-                if state.train_step % args.eval_interval == 0:
+                if g.state.train_step % args.eval_interval == 0:
                     evaluate_and_log(model, g.va_iter, 'val')
-
-                g.logger.info(f"--- {state.token_count}/{args.max_tokens}")
 
                 if should_log:
                     elapsed_time = time.time() - log_start_time
-                    elapsed_steps = state.train_step - state.last_log_step
+                    elapsed_steps = g.state.train_step - g.state.last_log_step
 
                     # compute average loss over last logging interval
                     cur_loss = accumulated_loss / elapsed_steps
-                    log_str = f'| epoch {epoch:3d} step {state.train_step:>8d} | {batch:>6d} batches | lr {optimizer.param_groups[0]["lr"]:.3g} ' \
+                    log_str = f'| epoch {epoch:3d} step {g.state.train_step:>8d} | {batch:>6d} batches | lr {optimizer.param_groups[0]["lr"]:.3g} ' \
                         f'| ms/batch {elapsed_time * 1000 / elapsed_steps:5.2f} | loss {cur_loss:5.2f}'
                     if args.dataset in ['enwik8', 'text8']:
                         log_str += f' | bpc {cur_loss / math.log(2):9.5f}'
@@ -675,7 +668,7 @@ def main_loop():
                     linear_scaling_factor = batch_total / 32  # TODO(y): merge logic from master
                     log_tb('learning/base_lr', current_lr / linear_scaling_factor)
                     if args.optim == 'lamb':
-                        log_lamb_rs(optimizer, g.event_writer, state.token_count)
+                        log_lamb_rs(optimizer, g.event_writer, g.state.token_count)
 
                     time_per_batch = elapsed_time / elapsed_steps
                     time_per_sample = time_per_batch / args.batch_size
@@ -693,7 +686,7 @@ def main_loop():
 
                     accumulated_loss = 0
                     log_start_time = time.time()
-                    state.last_log_step = state.train_step
+                    g.state.last_log_step = g.state.train_step
 
             # end of epoch loop
 
@@ -701,7 +694,7 @@ def main_loop():
                 g.logger.info(f'Saving checkpoint for epoch {epoch}')
                 util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{epoch}')
 
-            state.partial_epoch = False
+            g.state.partial_epoch = False
 
     except KeyboardInterrupt:
         g.logger.info('-' * 100)
@@ -712,9 +705,9 @@ def main_loop():
     return losses
 
 
-def run_checkpoint_test():
+def test_checkpoint():
     # run all the way through
-    cmd_args = "--local --data=testdata --batch_size=1 " \
+    cmd_args = "--local --data=testdata --batch_size=1 --verbose_log_steps=0 " \
                "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=4 --tgt_len=1 --scheduler=constant "
     g.args = parse_args(cmd_args.split())
     logging_setup()
@@ -737,12 +730,44 @@ def run_checkpoint_test():
 
     util.assert_close(losses3[0], losses1[len(losses2)])
     util.assert_close(losses3[-1], losses1[-1])
+    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+
+
+def test_checkpoint_fp16():
+    # run all the way through
+    cmd_args = "--local --data=testdata --batch_size=1 --verbose_log_steps=0 " \
+               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=4 --tgt_len=1 --scheduler=constant --fp16 " \
+               "--dynamic_loss_scale"
+    g.args = parse_args(cmd_args.split())
+    logging_setup()
+    data_setup()
+    losses1 = main_loop()
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 2
+    g.args.save_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses2 = main_loop()
+    util.save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 4
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses3 = main_loop()
+
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+
+    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
 
 
 if __name__ == '__main__':
     current_args = parse_args()
-    if current_args.checkpoint_test:
-        run_checkpoint_test()
+    if current_args.test:
+        test_name = 'test_' + current_args.test
+        eval(test_name+'()')
     else:
         g.args = current_args
         logging_setup()

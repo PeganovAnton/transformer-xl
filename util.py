@@ -2,10 +2,12 @@ import datetime
 import os
 import sys
 
+import pytz
 import torch
 import torch.distributed as dist
 
 import globals as g
+from fp16_opt import FP16_Optimizer
 
 
 def toscalar(t):  # use on python scalars/pytorch scalars
@@ -142,15 +144,45 @@ def save_state(state, fn):
     """Saves"""
     if get_global_rank() != 0:
         return
+
+    # Unwrap DDP
+    state_model = state.model
     if state.model.__class__.__name__ == 'DistributedDataParallel':
         state.model = state.model.module
+
+    # Unwrap FP16_Model
+    if state.model.__class__.__name__ == 'FP16_Module':
+        state.model = state.model.module
+
+    # Unwrap FP16_Optimizer, which doesn't support pickle
+    state_optimizer = state.optimizer
+    if state.optimizer.__class__.__name__ == 'FP16_Optimizer':
+        state.fp16_optimizer_state_dict = state.optimizer.state_dict()
+        state.optimizer = state.optimizer.optimizer
+
     torch.save(state, fn)
+    state.model = state_model
+    state.optimizer = state_optimizer
 
 
+# TODO(y): add random state
+# https://github.com/NVIDIA/Megatron-LM/blob/0399d32c75b4719c89b91c18a173d05936112036/utils.py#L147
 def load_state(fn):
     """Loads state from fn"""
     if get_global_rank() != 0:
         return
+
+    state = torch.load(fn)
+
+    # special handling for FP16 optimizer which was unwrapped during pickling
+    if state.fp16_optimizer_state_dict:
+        optimizer = FP16_Optimizer(state.optimizer,
+                                   static_loss_scale=state.args.static_loss_scale,
+                                   dynamic_loss_scale=state.args.dynamic_loss_scale,
+                                   dynamic_loss_args={'init_scale': 2 ** 16},
+                                   verbose=False)
+        optimizer.load_state_dict(state.fp16_optimizer_state_dict)
+
     return torch.load(fn)
 
 
@@ -176,3 +208,23 @@ def assert_close(observed, target, rtol=1e-5, atol=1e-3):
 
     absolute = abs(target-observed)
     assert absolute < rtol, f"atol {atol} exceeded at {absolute}, observed={observed}, target={target}"
+
+
+def assert_args_equal(args1, args2):
+    args1 = vars(args1)
+    args2 = vars(args2)
+    keys = set(args1.keys()).union(args2.keys())
+    for key in keys:
+        assert key in args1, f"{key} not found in args1"
+        assert key in args2, f"{key} not found in args2"
+        assert args1[key] == args2[key], f"args not equal for key={key}, {args1[key]} != {args2[key]}"
+
+
+def merge_args_from_state(args, state):
+    args = vars(args)
+    state_args = vars(state.args)
+
+    attr_to_merge = ['fp16', 'dynamic_loss_scale', 'static_loss_scale']
+    for attr in attr_to_merge:
+        assert args[attr] == state_args[attr]  # TODO(y): decide which setting has precedence when attributes conflict
+        args[attr] = state_args[attr]

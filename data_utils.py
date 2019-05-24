@@ -9,6 +9,8 @@ import torch
 
 from utils.vocabulary import OpenAIVocab, Vocab
 
+import globals as g
+
 
 class LMOrderedIterator:
     def __init__(self, data, bsz: int, bptt: int, offset: int = 0,
@@ -278,10 +280,10 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
     cache_filepath = os.path.join(datadir, 'cache.pt.bpe' if use_bpe else 'cache.pt')
     # Don't cache dataset for wiki, it's just a file list.
     if os.path.exists(cache_filepath) and dataset != 'wiki':
-        print('Loading cached dataset...')
+        g.logger.info('Loading cached dataset...')
         corpus = torch.load(cache_filepath)
     else:
-        print('Producing dataset {}...'.format(dataset))
+        g.logger.info('Producing dataset {}...'.format(dataset))
         kwargs = {'max_size': max_size}
         if dataset in ['wt103', 'wt2', 'wt103-normal']:
             kwargs['special'] = ['<eos>']
