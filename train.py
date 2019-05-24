@@ -1,6 +1,7 @@
 # coding: utf-8
 #
 import argparse
+import copy
 import itertools
 import logging
 import math
@@ -705,11 +706,40 @@ def main_loop():
     return losses
 
 
+simple_args = parse_args("--local --data=testdata --batch_size=1 --verbose_log_steps=0 " \
+                         "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=4 --tgt_len=1 --scheduler=constant ".split())
+
+
 def test_checkpoint():
-    # run all the way through
-    cmd_args = "--local --data=testdata --batch_size=1 --verbose_log_steps=0 " \
-               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=4 --tgt_len=1 --scheduler=constant "
-    g.args = parse_args(cmd_args.split())
+    g.args = copy.deepcopy(simple_args)
+
+    logging_setup()
+    data_setup()
+    losses1 = main_loop()
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 2
+    g.args.save_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses2 = main_loop()
+    util.save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 4
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses3 = main_loop()
+
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+
+
+def test_checkpoint_dropout():
+    g.args = copy.deepcopy(simple_args)
+    g.args.dropout = 0.5
+
     logging_setup()
     data_setup()
     losses1 = main_loop()
@@ -734,11 +764,9 @@ def test_checkpoint():
 
 
 def test_checkpoint_fp16():
-    # run all the way through
-    cmd_args = "--local --data=testdata --batch_size=1 --verbose_log_steps=0 " \
-               "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=4 --tgt_len=1 --scheduler=constant --fp16 " \
-               "--dynamic_loss_scale"
-    g.args = parse_args(cmd_args.split())
+    g.args = copy.deepcopy(simple_args)
+    g.args.fp16 = True
+
     logging_setup()
     data_setup()
     losses1 = main_loop()

@@ -1,4 +1,7 @@
 import datetime
+import random
+
+import numpy
 import os
 import sys
 
@@ -15,7 +18,7 @@ def toscalar(t):  # use on python scalars/pytorch scalars
     if isinstance(t, (float, int)):
         return t
     if hasattr(t, 'float'):
-        t = t.float()   # half not supported on CPU
+        t = t.float()  # half not supported on CPU
     if hasattr(t, 'item'):
         return t.item()
     else:
@@ -61,7 +64,7 @@ def one_of(l):
         return l[1]
     else:
         assert f"List {l} has more than one non-zero entries"
-    
+
 
 def dist_sum_tensor(tensor):
     rt = tensor.clone()
@@ -128,7 +131,7 @@ def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
         if override_lr:
             optimizer_state_dict['param_groups'][0]['lr'] = override_lr
         optimizer.load_state_dict(optimizer_state_dict)
-    
+
 
 def dist_save_checkpoint(ddp_model, optimizer_, directory: str, suffix=''):
     """Saves model/optimizer into {directory}/optimizer-{suffix}.py and {directory}/model-{suffix}.pt"""
@@ -160,6 +163,12 @@ def save_state(state, fn):
         state.fp16_optimizer_state_dict = state.optimizer.state_dict()
         state.optimizer = state.optimizer.optimizer
 
+    # save RNG state as well and the function to restore it
+    get_rng_methods = torch.cuda.get_rng_state_all, torch.get_rng_state, numpy.random.get_state, random.getstate
+    set_rng_methods = torch.cuda.set_rng_state_all, torch.set_rng_state, numpy.random.set_state, random.setstate
+    state.rng_state = [method() for method in get_rng_methods]
+    state.set_rng_methods = set_rng_methods
+
     torch.save(state, fn)
     state.model = state_model
     state.optimizer = state_optimizer
@@ -174,6 +183,8 @@ def load_state(fn):
 
     state = torch.load(fn)
 
+    # TODO(y): also rewrap model into FP16_Module?
+
     # special handling for FP16 optimizer which was unwrapped during pickling
     if state.fp16_optimizer_state_dict:
         optimizer = FP16_Optimizer(state.optimizer,
@@ -182,6 +193,10 @@ def load_state(fn):
                                    dynamic_loss_args={'init_scale': 2 ** 16},
                                    verbose=False)
         optimizer.load_state_dict(state.fp16_optimizer_state_dict)
+
+    for method, rng_state in zip(state.set_rng_methods, state.rng_state):
+        pass
+        method(rng_state)
 
     return torch.load(fn)
 
@@ -203,10 +218,10 @@ def current_timestamp(timezone: str = 'America/Los_Angeles') -> str:
 
 
 def assert_close(observed, target, rtol=1e-5, atol=1e-3):
-    relative = abs(target-observed)/target
+    relative = abs(target - observed) / target
     assert relative < rtol, f"rtol {rtol} exceeded at {relative}, observed={observed}, target={target}"
 
-    absolute = abs(target-observed)
+    absolute = abs(target - observed)
     assert absolute < rtol, f"atol {atol} exceeded at {absolute}, observed={observed}, target={target}"
 
 
