@@ -1,13 +1,19 @@
+import argparse
 import copy
 import datetime
 import os
 import sys
+from typing import Optional, List, Dict
+
+from torch.nn import Module
 
 import pytz
 import torch
 import torch.distributed as dist
+from torch import optim
 
 import globals as g
+from data_utils import LMOrderedIterator
 
 
 def toscalar(t):  # use on python scalars/pytorch scalars
@@ -275,3 +281,14 @@ def get_parameters(var):
     else:
         add_nodes(var.grad_fn)
     return variables
+
+
+class FrozenClass(object):
+    __isfrozen = False
+    def __setattr__(self, key, value):
+        if self.__isfrozen and not hasattr(self, key):
+            raise TypeError( "%r is a frozen class" % self )
+        object.__setattr__(self, key, value)
+
+    def _freeze(self):
+        self.__isfrozen = True

@@ -10,6 +10,7 @@ import random
 import sys
 import time
 from collections import OrderedDict
+from typing import Optional, List, Dict
 
 import pytest
 
@@ -24,7 +25,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 import globals as g  # global state current run, shared between modules
 import util
-from data_utils import get_lm_corpus
+from data_utils import get_lm_corpus, LMOrderedIterator
 from eval import evaluate
 from fp16_opt import FP16_Module, FP16_Optimizer
 from lr_finder import LRFinder
@@ -186,6 +187,9 @@ parser.add_argument('--auto_shutdown_success_delay_mins', default=10, type=int,
                     help='how long to wait until shutting down on success')
 parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
                     help='how long to wait before shutting down on error')
+
+# testing flags
+parser.add_argument('--test', type=str, default='', help='run test')
 
 
 def parse_args(cmd_args=sys.argv[1:]):
@@ -467,10 +471,48 @@ def optimizer_setup(state):
 
 # State loading/saving. Designed for restoring after pre-emptions. Assumes all sources, args and environment are
 # the same.
-def save_state(state, fn):
-    """Saves"""
+
+# Because args are required to run creation procedures that are not pickled, args are included as part of the state.
+# When restoring from state, existing args are ignored
+
+# arg values which are not saved as part of the state, and are instead loaded from args
+excluded_args = ['save_state_fn', 'load_state_fn']
+
+# arg values that can be saved as part of state, but current arg values will override it
+overridable_args = ['max_tokens']
+
+
+class TrainState(util.FrozenClass):
+    model: Optional[nn.Module] = None
+    optimizer: Optional[torch.optim.Adam] = None
+    args: Optional[argparse.Namespace] = None
+    mems: Optional[List] = None
+    tr_iter: Optional[LMOrderedIterator] = None
+    scheduler: Optional[optim.lr_scheduler.CosineAnnealingLR] = None
+    train_step: int = 0
+    last_epoch: int = 1
+    token_count: int = 0  # number of tokens that have been consumed by the model training
+    best_val_loss: Optional[float] = None
+    partial_epoch: bool = False
+    optimizer_state_dict: Optional[Dict] = None
+    rng_state: Optional[List] = None
+    set_rng_methods: Optional[List] = None
+
+    def __init__(self, args):
+        self.args = args
+        self._freeze()
+
+
+def save_state(state: TrainState, fn: str):
+    """Saves training state"""
     if util.get_global_rank() != 0:
         return
+
+    # remove excluded args from state
+    state_args = state.args
+    state.args = copy.copy(state_args)
+    for arg in excluded_args:
+        del vars(state.args)[arg]
 
     # Unwrap DDP
     state_model = state.model
@@ -480,6 +522,8 @@ def save_state(state, fn):
     state.optimizer_state_dict = state.optimizer.state_dict()
     state_optimizer = state.optimizer  # don't save optimizer, since using state-dict
     state.optimizer = None
+
+    # Unwrap FP16_Module
     if state.args.fp16:
         state.model = state.model.module
 
@@ -491,22 +535,48 @@ def save_state(state, fn):
 
     torch.save(state, fn)
 
-    # Restore state
+    # Restore model/optimizer to original versions
     state.model = state_model
     state.optimizer = state_optimizer
+    state.args = state_args
 
 
 def load_state(fn):
-    """Loads state from fn"""
+    """Loads training state from fn"""
     if util.get_global_rank() != 0:
         return
 
     state = torch.load(fn)
+
+    # check that args are not in conflict
+    current_args = vars(g.args)
+    restored_args = vars(state.args)
+
+    # fill in excluded args from current args
+    for arg in excluded_args:
+        if arg in vars(g.args):
+            vars(state.args)[arg] = vars(g.args)[arg]
+
+    keys = set(current_args.keys()).union(restored_args.keys())
+    for arg in keys:
+        if arg in excluded_args:
+            continue
+        if arg in overridable_args and arg in current_args:
+            if restored_args[arg] != current_args[arg]:
+                g.logger.info(f"Overriding saved {arg}={restored_args[arg]} to {current_args[arg]}")
+                restored_args[arg] = current_args[arg]
+        current_val = current_args.get(arg, 'undefined')
+        restored_val = restored_args.get(arg, 'undefined')
+        assert current_val == restored_val, f"Argument {arg} overridden, restoring {arg}={restored_val} from {fn} but current " \
+            f"value is {arg}={current_val}"
+    pass
+
     optimizer_setup(state)
     state.optimizer.load_state_dict(state.optimizer_state_dict)
 
     for method, rng_state in zip(state.set_rng_methods, state.rng_state):
         method(rng_state)
+        pass
 
     return state
 
@@ -526,26 +596,12 @@ def main_loop():
         assert (util.get_world_size() == dist.get_world_size())
         g.logger.info(f"Distributed: success ({args.local_rank}/{dist.get_world_size()})")
 
-    from attrdict import AttrDict
-    if g.args.load_state_fn:
+    if args.load_state_fn:
         g.state = load_state(args.load_state_fn)
         g.logger.info(f"Restoring training from {args.load_state_fn}")
     else:
         g.logger.info("creating new model")
-        g.state = AttrDict({'model': None,
-                            'optimizer': None,
-                            'mems': None,
-                            'tr_iter': None,
-                            'last_epoch': 1,
-                            'scheduler': None,
-                            'train_step': 0,
-                            'last_log_step': 0,
-                            'token_count': 0,  # number of tokens that have been consumed by the model training
-                            'best_val_loss': None,
-                            'partial_epoch': False,
-                            'fp16_optimizer_state_dict': None,
-                            'args': args
-                            })  # state of the optimization that will get restored on checkpoint
+        g.state = TrainState(args)
 
         g.state.model = MemTransformerLM(g.ntokens, args.n_layer, args.n_head, args.d_model,
                                          args.d_head, args.d_inner, args.dropout, args.dropatt,
@@ -807,6 +863,66 @@ def test_checkpoint_dropout():
     g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
 
 
+def test_checkpoint_lamb():
+    g.args = copy.deepcopy(simple_args)
+    g.args.dropout = 0.5
+
+    logging_setup()
+    data_setup()
+    g.args.max_tokens = 4
+    g.args.optim = 'lamb'
+    losses1 = main_loop()
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 2
+    g.args.save_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses2 = main_loop()
+    save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 4
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses3 = main_loop()
+
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+
+    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+
+
+def test_checkpoint_fp16_lamb():
+    g.args = copy.deepcopy(simple_args)
+    g.args.dropout = 0.5
+
+    logging_setup()
+    data_setup()
+    g.args.max_tokens = 40
+    g.args.optim = 'lamb'
+    losses1 = main_loop()
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 20
+    g.args.save_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses2 = main_loop()
+    save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 40
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses3 = main_loop()
+
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+
+    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="fp16 tests require GPU")
 def test_checkpoint_fp16():
     g.args = copy.deepcopy(simple_args)
@@ -827,9 +943,46 @@ def test_checkpoint_fp16():
     g.args.max_tokens = 4
     g.args.save_state_fn = None
     g.args.load_state_fn = '/tmp/state.pt'
-    data_setup()      # reset iterators
+    # data_setup()   # reset iterators
     losses3 = main_loop()
 
+    print(losses1)
+    print(losses2)
+    print(losses3)
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+
+    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="fp16 tests require GPU")
+def test_checkpoint_fp16_dropout():
+    g.args = copy.deepcopy(simple_args)
+    g.args.fp16 = True
+    g.args.droput = 0.0
+
+    logging_setup()
+    data_setup()
+    g.args.max_tokens = 40
+    losses1 = main_loop()
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 20
+    g.args.save_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses2 = main_loop()
+    save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 40
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    # data_setup()   # reset iterators
+    losses3 = main_loop()
+
+    print(losses1)
+    print(losses2)
+    print(losses3)
     util.assert_close(losses3[0], losses1[len(losses2)])
     util.assert_close(losses3[-1], losses1[-1])
 
@@ -837,12 +990,15 @@ def test_checkpoint_fp16():
 
 
 if __name__ == '__main__':
+    g.args = parse_args()
 
-    current_args = parse_args()
-    g.args = current_args
-    logging_setup()
-    data_setup()
+    if g.args.test:
+        eval(f'test_{g.args.test}()')
+        sys.exit(0)
+
     try:
+        logging_setup()
+        data_setup()
         main_loop()
         if g.args.save_state_fn:
             save_state(g.state, g.args.save_state_fn)
