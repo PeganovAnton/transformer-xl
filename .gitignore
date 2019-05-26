@@ -9,3 +9,4 @@ __pycache__
 */*.swp
 *.swp
 .ipynb_checkpoints/
+/testdata/cache.pt

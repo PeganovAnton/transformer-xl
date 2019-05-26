@@ -1,7 +1,5 @@
+import copy
 import datetime
-import random
-
-import numpy
 import os
 import sys
 
@@ -10,7 +8,6 @@ import torch
 import torch.distributed as dist
 
 import globals as g
-from fp16_opt import FP16_Optimizer
 
 
 def toscalar(t):  # use on python scalars/pytorch scalars
@@ -143,62 +140,10 @@ def dist_save_checkpoint(ddp_model, optimizer_, directory: str, suffix=''):
         torch.save(optimizer_.state_dict(), f_1)
 
 
-def save_state(state, fn):
-    """Saves"""
-    if get_global_rank() != 0:
-        return
-
-    # Unwrap DDP
-    state_model = state.model
-    if state.model.__class__.__name__ == 'DistributedDataParallel':
-        state.model = state.model.module
-
-    # Unwrap FP16_Model
-    if state.model.__class__.__name__ == 'FP16_Module':
-        state.model = state.model.module
-
-    # Unwrap FP16_Optimizer, which doesn't support pickle
-    state_optimizer = state.optimizer
-    if state.optimizer.__class__.__name__ == 'FP16_Optimizer':
-        state.fp16_optimizer_state_dict = state.optimizer.state_dict()
-        state.optimizer = state.optimizer.optimizer
-
-    # save RNG state as well and the function to restore it
-    get_rng_methods = torch.cuda.get_rng_state_all, torch.get_rng_state, numpy.random.get_state, random.getstate
-    set_rng_methods = torch.cuda.set_rng_state_all, torch.set_rng_state, numpy.random.set_state, random.setstate
-    state.rng_state = [method() for method in get_rng_methods]
-    state.set_rng_methods = set_rng_methods
-
-    torch.save(state, fn)
-    state.model = state_model
-    state.optimizer = state_optimizer
-
-
-# TODO(y): add random state
-# https://github.com/NVIDIA/Megatron-LM/blob/0399d32c75b4719c89b91c18a173d05936112036/utils.py#L147
-def load_state(fn):
-    """Loads state from fn"""
-    if get_global_rank() != 0:
-        return
-
-    state = torch.load(fn)
-
-    # TODO(y): also rewrap model into FP16_Module?
-
-    # special handling for FP16 optimizer which was unwrapped during pickling
-    if state.fp16_optimizer_state_dict:
-        optimizer = FP16_Optimizer(state.optimizer,
-                                   static_loss_scale=state.args.static_loss_scale,
-                                   dynamic_loss_scale=state.args.dynamic_loss_scale,
-                                   dynamic_loss_args={'init_scale': 2 ** 16},
-                                   verbose=False)
-        optimizer.load_state_dict(state.fp16_optimizer_state_dict)
-
-    for method, rng_state in zip(state.set_rng_methods, state.rng_state):
-        pass
-        method(rng_state)
-
-    return torch.load(fn)
+def get_hash(o):
+    import pickle
+    pickle.dump(o, open('/tmp/util_hash', 'wb'))
+    return hash(open('/tmp/util_hash', 'rb').read())
 
 
 def cancel_shutdown():
@@ -243,3 +188,90 @@ def merge_args_from_state(args, state):
     for attr in attr_to_merge:
         assert args[attr] == state_args[attr]  # TODO(y): decide which setting has precedence when attributes conflict
         args[attr] = state_args[attr]
+
+
+def flat_grad_model(model):
+    flat = None
+    for param in model.parameters():
+        if param is None:
+            continue
+        if param.grad is None:
+            continue
+        if flat is None:
+            flat = param.grad.data.reshape(-1).clone()
+        else:
+            flat = torch.cat((flat, param.grad.data.reshape(-1)), 0)
+    return torch.Tensor() if flat is None else flat
+
+
+def flat_grad_opt(optimizer):
+    flat = None
+    for param_group in optimizer.param_groups:
+        for param in param_group['params']:
+            if param is None:
+                continue
+            if param.grad is None:
+                continue
+            if flat is None:
+                flat = param.grad.data.reshape(-1).clone()
+            else:
+                flat = torch.cat((flat, param.grad.data.reshape(-1)), 0)
+    return torch.Tensor() if flat is None else flat
+
+
+def flat_param(model):
+    flat = None
+    for param in model.parameters():
+        if param is None:
+            continue
+        if flat is None:
+            flat = param.data.reshape(-1).clone()
+        else:
+            flat = torch.cat((flat, param.data.reshape(-1)), 0)
+    return torch.Tensor() if flat is None else flat
+
+
+# Debugging
+record_dict = {}
+
+
+def record(tag, value):
+    record_dict.setdefault(tag, {})[g.state.train_step] = value
+
+
+def dump_records():
+    global record_dict
+    t = copy.deepcopy(record_dict)
+    record_dict = {}
+    return t
+
+
+def get_parameters(var):
+    """Walk backward from node and find all Variables in given autograd graph.
+    based on https://github.com/szagoruyko/pytorchviz/blob/master/torchviz/dot.py"""
+
+    seen = set()
+    variables = set()
+
+    def add_nodes(vv):
+        if vv not in seen:
+            seen.add(vv)
+            if torch.is_tensor(vv):
+                pass
+            elif hasattr(vv, 'variable'):
+                u = vv.variable
+                variables.add(u)
+            if hasattr(vv, 'next_functions'):
+                for u in vv.next_functions:
+                    if u[0] is not None:
+                        add_nodes(u[0])
+            if hasattr(vv, 'saved_tensors'):
+                for t in vv.saved_tensors:
+                    add_nodes(t)
+
+    if isinstance(var, tuple):
+        for v in var:
+            add_nodes(v.grad_fn)
+    else:
+        add_nodes(var.grad_fn)
+    return variables

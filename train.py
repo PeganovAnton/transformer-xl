@@ -6,9 +6,12 @@ import itertools
 import logging
 import math
 import os
+import random
 import sys
 import time
 from collections import OrderedDict
+
+import pytest
 
 import numpy as np
 import torch
@@ -158,7 +161,8 @@ parser.add_argument('--num_gpu', type=int, default=1,
 parser.add_argument('--bpe', action='store_true', default=False,
                     help="Use BPE instead of traditional vocabulary.")
 parser.add_argument('--fp16', action='store_true',
-                    help='Run in pseudo-fp16 mode (fp16 storage fp32 math).')
+                    help='Run in fp16 mode.')
+
 parser.add_argument('--static_loss_scale', type=float, default=1,
                     help='Static loss scale, positive power of 2 values can '
                          'improve fp16 convergence.')
@@ -182,9 +186,6 @@ parser.add_argument('--auto_shutdown_success_delay_mins', default=10, type=int,
                     help='how long to wait until shutting down on success')
 parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
                     help='how long to wait before shutting down on error')
-
-# testing flags
-parser.add_argument('--test', type=str, default='', help='run test')
 
 
 def parse_args(cmd_args=sys.argv[1:]):
@@ -311,6 +312,7 @@ def data_setup():
     """Sets up logging, random seeds and corpus"""
     # global variables
     # Set the random seed manually for reproducibility.
+    random.seed(g.args.seed)
     np.random.seed(g.args.seed)
     torch.manual_seed(g.args.seed)
     if torch.cuda.is_available():
@@ -442,6 +444,73 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
         state.best_val_loss = mean_loss
 
 
+# This function wraps creation code that needs to run both during intial setup and during checkpoint restore
+def optimizer_setup(state):
+    model = state.model
+    if state.args.optim.lower() == 'sgd':
+        optimizer = optim.SGD(g.state.model.parameters(), lr=state.args.lr, momentum=state.args.mom)
+    elif state.args.optim.lower() == 'lamb':
+        optimizer = Lamb(model.parameters(), lr=state.args.lr, weight_decay=state.args.wd)
+    else:
+        assert state.args.optim.lower() == 'adam'
+        optimizer = optim.Adam(model.parameters(), lr=state.args.lr, weight_decay=state.args.wd)
+    state.optimizer = optimizer
+
+    if state.args.fp16:
+        state.model = FP16_Module(state.model)
+        state.optimizer = FP16_Optimizer(state.optimizer,
+                                         static_loss_scale=state.args.static_loss_scale,
+                                         dynamic_loss_scale=state.args.dynamic_loss_scale,
+                                         dynamic_loss_args={'init_scale': 2 ** 16},
+                                         verbose=False)
+
+
+# State loading/saving. Designed for restoring after pre-emptions. Assumes all sources, args and environment are
+# the same.
+def save_state(state, fn):
+    """Saves"""
+    if util.get_global_rank() != 0:
+        return
+
+    # Unwrap DDP
+    state_model = state.model
+    if state.model.__class__.__name__ == 'DistributedDataParallel':
+        state.model = state.model.module
+
+    state.optimizer_state_dict = state.optimizer.state_dict()
+    state_optimizer = state.optimizer  # don't save optimizer, since using state-dict
+    state.optimizer = None
+    if state.args.fp16:
+        state.model = state.model.module
+
+    # save RNG state as well and the function to restore it
+    get_rng_methods = torch.cuda.get_rng_state_all, torch.get_rng_state, np.random.get_state, random.getstate
+    set_rng_methods = torch.cuda.set_rng_state_all, torch.set_rng_state, np.random.set_state, random.setstate
+    state.rng_state = [method() for method in get_rng_methods]
+    state.set_rng_methods = set_rng_methods
+
+    torch.save(state, fn)
+
+    # Restore state
+    state.model = state_model
+    state.optimizer = state_optimizer
+
+
+def load_state(fn):
+    """Loads state from fn"""
+    if util.get_global_rank() != 0:
+        return
+
+    state = torch.load(fn)
+    optimizer_setup(state)
+    state.optimizer.load_state_dict(state.optimizer_state_dict)
+
+    for method, rng_state in zip(state.set_rng_methods, state.rng_state):
+        method(rng_state)
+
+    return state
+
+
 def main_loop():
     util.cancel_shutdown()
     losses = []
@@ -459,13 +528,8 @@ def main_loop():
 
     from attrdict import AttrDict
     if g.args.load_state_fn:
-        g.state = util.load_state(args.load_state_fn)
+        g.state = load_state(args.load_state_fn)
         g.logger.info(f"Restoring training from {args.load_state_fn}")
-
-        # Some objects like FP16_Optimizer can't be pickled, so we must recreate them by following the same procedure
-        # as before. This procedure depends on some args, so those args are also restored from the state.
-        util.merge_args_from_state(g.args, g.state)
-        args = g.args  # todo(y): not needed?
     else:
         g.logger.info("creating new model")
         g.state = AttrDict({'model': None,
@@ -493,27 +557,18 @@ def main_loop():
         g.state.model.apply(weights_init)
         g.state.model.word_emb.apply(
             weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
+        g.state.model.to(g.device)
+        optimizer_setup(g.state)
 
     model: MemTransformerLM = g.state.model
+    optimizer = g.state.optimizer
 
     # log model info
-    n_all_param = sum([p.nelement() for p in model.parameters()])
-    log_tb('sizes/params', n_all_param)
-    n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
-    log_tb('sizes/non_emb_params', n_nonemb_param)
-    g.logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
-
-    # create optimizer
-    if not g.args.load_state_fn:
-        if args.optim.lower() == 'sgd':
-            optimizer = optim.SGD(g.state.model.parameters(), lr=args.lr, momentum=args.mom)
-        elif args.optim.lower() == 'lamb':
-            optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
-        else:
-            assert args.optim.lower() == 'adam'
-            optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
-        g.state.optimizer = optimizer
-    optimizer = g.state.optimizer
+    # n_all_param = sum([p.nelement() for p in model.parameters()])
+    # log_tb('sizes/params', n_all_param)
+    # n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
+    # log_tb('sizes/non_emb_params', n_nonemb_param)
+    # g.logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
 
     # scheduler
     if not g.args.load_state_fn:
@@ -526,19 +581,6 @@ def main_loop():
         else:
             assert args.scheduler == 'constant'
             g.state.scheduler = util.NoOp()
-
-    model = model.to(g.device)
-
-    # fp16 wrapper
-    if args.fp16:
-        model = FP16_Module(model)
-        optimizer = FP16_Optimizer(optimizer,
-                                   static_loss_scale=args.static_loss_scale,
-                                   dynamic_loss_scale=args.dynamic_loss_scale,
-                                   dynamic_loss_args={'init_scale': 2 ** 16},
-                                   verbose=False)
-    g.state.model = model
-    g.state.optimizer = optimizer
 
     # Setup distributed model
     if args.local:
@@ -593,26 +635,29 @@ def main_loop():
                 ret = model(data, target, *g.state.mems)
                 loss, g.state.mems = ret[0], ret[1:]
 
-                loss = loss.float().mean().type_as(loss)
+                loss: torch.Tensor = loss.float().mean().type_as(loss)
                 with timeit('backwards', noop=not should_log):
                     if args.fp16:
                         optimizer.backward(loss)
                     else:
                         loss.backward()
                 loss0 = util.toscalar(loss)
+                util.record('loss', loss0)
+
+                util.record('params', torch.sum(util.flat_param(model)).item())
                 losses.append(loss0)
                 accumulated_loss += loss0
 
                 if args.fp16:
-                    optimizer.clip_master_grads(args.clip)
+                   optimizer.clip_master_grads(args.clip)
                 else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+                   torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
                 optimizer.step()
                 g.state.train_step += 1
 
                 # step-wise learning rate annealing
-                if args.fp16 and optimizer.overflow:
+                if hasattr(optimizer, 'overflow') and optimizer.overflow:
                     g.logger.info("skipped iteration")
                 else:
                     # TODO(y): simplify
@@ -689,8 +734,6 @@ def main_loop():
                     log_start_time = time.time()
                     g.state.last_log_step = g.state.train_step
 
-            # end of epoch loop
-
             if args.checkpoint_each_epoch:
                 g.logger.info(f'Saving checkpoint for epoch {epoch}')
                 util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{epoch}')
@@ -706,8 +749,9 @@ def main_loop():
     return losses
 
 
-simple_args = parse_args("--local --data=testdata --batch_size=1 --verbose_log_steps=0 " \
-                         "--n_layer=1 --d_model=10 --d_inner=2 --max_tokens=4 --tgt_len=1 --scheduler=constant ".split())
+simple_args_str = "--local --data=testdata --batch_size=1 --verbose_log_steps=0 --n_layer=1 --d_model=10 --d_inner=2 " \
+                  "--max_tokens=4 --tgt_len=1 --scheduler=constant "
+simple_args = parse_args(simple_args_str.strip().split())
 
 
 def test_checkpoint():
@@ -722,7 +766,7 @@ def test_checkpoint():
     g.args.save_state_fn = '/tmp/state.pt'
     data_setup()   # reset iterators
     losses2 = main_loop()
-    util.save_state(g.state, g.args.save_state_fn)
+    save_state(g.state, g.args.save_state_fn)
 
     # restore from checkpoint and continue to the end
     g.args.max_tokens = 4
@@ -749,7 +793,7 @@ def test_checkpoint_dropout():
     g.args.save_state_fn = '/tmp/state.pt'
     data_setup()   # reset iterators
     losses2 = main_loop()
-    util.save_state(g.state, g.args.save_state_fn)
+    save_state(g.state, g.args.save_state_fn)
 
     # restore from checkpoint and continue to the end
     g.args.max_tokens = 4
@@ -763,6 +807,7 @@ def test_checkpoint_dropout():
     g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="fp16 tests require GPU")
 def test_checkpoint_fp16():
     g.args = copy.deepcopy(simple_args)
     g.args.fp16 = True
@@ -776,13 +821,13 @@ def test_checkpoint_fp16():
     g.args.save_state_fn = '/tmp/state.pt'
     data_setup()   # reset iterators
     losses2 = main_loop()
-    util.save_state(g.state, g.args.save_state_fn)
+    save_state(g.state, g.args.save_state_fn)
 
     # restore from checkpoint and continue to the end
     g.args.max_tokens = 4
     g.args.save_state_fn = None
     g.args.load_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()      # reset iterators
     losses3 = main_loop()
 
     util.assert_close(losses3[0], losses1[len(losses2)])
@@ -792,51 +837,48 @@ def test_checkpoint_fp16():
 
 
 if __name__ == '__main__':
+
     current_args = parse_args()
-    if current_args.test:
-        test_name = 'test_' + current_args.test
-        eval(test_name+'()')
-    else:
-        g.args = current_args
-        logging_setup()
-        data_setup()
-        try:
-            main_loop()
-            if g.args.save_state_fn:
-                util.save_state(g.state, g.args.save_state_fn)
+    g.args = current_args
+    logging_setup()
+    data_setup()
+    try:
+        main_loop()
+        if g.args.save_state_fn:
+            save_state(g.state, g.args.save_state_fn)
 
-            # Eval one more time.
-            evaluate_and_log(g.state.model, g.va_iter, 'val')
+        # Eval one more time.
+        evaluate_and_log(g.state.model, g.va_iter, 'val')
 
-            # Load the best saved model.
-            model_file = os.path.join(g.args.logdir, 'model-best.pt')
-            g.logger.info("Loading best checkpoint")
-            if os.path.exists(model_file):
-                with open(model_file, 'rb') as model_f:
-                    with timeit('load'):
-                        if g.args.local:
-                            g.state.model = torch.load(model_f)
-                        else:
-                            g.state.model = torch.load(model_f, map_location=lambda storage, loc: storage.cuda(
-                                g.args.local_rank))
-                            g.state.model = DistributedDataParallel(
-                                g.state.model,
-                                device_ids=[g.args.local_rank],
-                                output_device=g.args.local_rank)
-            else:
-                g.logger.warn('no model file, using current model for loss')
+        # Load the best saved model.
+        model_file = os.path.join(g.args.logdir, 'model-best.pt')
+        g.logger.info("Loading best checkpoint")
+        if os.path.exists(model_file):
+            with open(model_file, 'rb') as model_f:
+                with timeit('load'):
+                    if g.args.local:
+                        g.state.model = torch.load(model_f)
+                    else:
+                        g.state.model = torch.load(model_f, map_location=lambda storage, loc: storage.cuda(
+                            g.args.local_rank))
+                        g.state.model = DistributedDataParallel(
+                            g.state.model,
+                            device_ids=[g.args.local_rank],
+                            output_device=g.args.local_rank)
+        else:
+            g.logger.warn('no model file, using current model for loss')
 
-            # Run on test data.
-            evaluate_and_log(g.state.model, g.te_iter, 'test')
+        # Run on test data.
+        evaluate_and_log(g.state.model, g.te_iter, 'test')
 
-            if not g.args.skip_auto_shutdown and g.args.local_rank == 0 and not g.args.local:
-                os.system(f'sudo shutdown -h -P +{g.args.auto_shutdown_success_delay_mins}')
-        except Exception as e:
-            import traceback
+        if not g.args.skip_auto_shutdown and g.args.local_rank == 0 and not g.args.local:
+            os.system(f'sudo shutdown -h -P +{g.args.auto_shutdown_success_delay_mins}')
+    except Exception as e:
+        import traceback
 
-            traceback.print_exc(file=sys.stdout)
-            # Logger automatically picks up exc info from context.
-            g.logger.exception('Failed')
-            # in case of exception, wait 2 hours before shutting down
-            if not g.args.skip_auto_shutdown and not g.args.local:
-                os.system(f'sudo shutdown -h -P +{g.args.auto_shutdown_failure_delay_mins}')
+        traceback.print_exc(file=sys.stdout)
+        # Logger automatically picks up exc info from context.
+        g.logger.exception('Failed')
+        # in case of exception, wait 2 hours before shutting down
+        if not g.args.skip_auto_shutdown and not g.args.local:
+            os.system(f'sudo shutdown -h -P +{g.args.auto_shutdown_failure_delay_mins}')

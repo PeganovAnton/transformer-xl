@@ -15,4 +15,3 @@ cutoffs = None
 ntokens = None
 device = None
 state = None  # saveable state of optimization (model, optimizer, step, etc)
-
