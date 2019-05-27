@@ -96,7 +96,7 @@ class Vocab:
                 len(self), len(self.counter)))
 
     def encode_file(self, path: str, ordered=False, verbose=False, add_eos=True,
-            add_double_eos=False) -> torch.LongTensor:
+                    add_double_eos=False) -> torch.LongTensor:
         if verbose: 
             print(f'encoding file {path} ...')
         assert os.path.exists(path), f"{path} doesn't exist"

@@ -671,12 +671,14 @@ def main_loop():
             g.state.last_epoch = epoch
 
             log_start_time = time.time()
+            tokens_per_epoch = 0
             for batch, (data, target, seq_len) in enumerate(g.state.tr_iter):
                 # assert seq_len == data.shape[0]
                 # for i in range(1, data.shape[0]):
                 #     assert torch.all(torch.eq(data[i], target[i - 1]))
                 #     break
 
+                print(g.state.token_count, data)
                 batch_total = torch.tensor(data.shape[1]).to(g.device)
                 if args.local:  # TODO(y): factor out (need way to see if dist was inited)
                     batch_total = batch_total.sum()
@@ -730,6 +732,7 @@ def main_loop():
 
                 # TODO(y): remove total_tokens calculation
                 consumed_tokens = data.shape[0] * data.shape[1]
+                tokens_per_epoch += consumed_tokens
                 assert total_tokens == consumed_tokens
                 g.state.token_count += consumed_tokens
                 g.token_count = g.state.token_count
@@ -793,6 +796,11 @@ def main_loop():
             if args.checkpoint_each_epoch:
                 g.logger.info(f'Saving checkpoint for epoch {epoch}')
                 util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=f'{epoch}')
+            if tokens_per_epoch == 0:
+                print("zero tokens in last epoch")
+                logging.info("Zero tokens in last epoch, breaking")
+
+                break
 
             g.state.partial_epoch = False
 
@@ -921,6 +929,46 @@ def test_checkpoint_fp16_lamb():
     util.assert_close(losses3[-1], losses1[-1])
 
     g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+
+
+def test_checkpoint_wiki():
+    g.args = copy.deepcopy(simple_args)
+    g.args.test = 'yes'
+
+    g.args.data = 'testdata/wikiextracted'
+    g.args.dataset = 'wiki'
+    g.args.dropatt = 0.1
+    g.args.dropout = 0.1
+    g.args.bpe = True    # wiki requires BPE
+
+    g.args.optim = 'lamb'
+
+    logging_setup()
+    data_setup()
+    g.args.max_tokens = 4
+
+    losses1 = main_loop()
+    print(losses1)
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 2
+    g.args.save_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses2 = main_loop()
+    save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 4
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    data_setup()   # reset iterators
+    losses3 = main_loop()
+
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+
+    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="fp16 tests require GPU")

@@ -159,20 +159,27 @@ class LMMultiFileIterator(LMShuffledIterator):
     def get_sent_stream(self, path):
         sents = self.vocab.encode_file(path, add_double_eos=True)
         if self.shuffle:
+            assert False, "todo(y): check quality, spot check shows that >90% of data is left in original pos"
             np.random.shuffle(sents)
         # Create virtual sentences for wikipedia data.
         # TODO: Load a few files at a time, then chunk?
         if type(sents) == torch.Tensor:
             return iter(sents.split(len(sents) // self.bsz))
+        else:
+            assert False, "todo(y): find out when this is true"
         return iter(sents)
 
     def __iter__(self):
         if self.shuffle:
+            assert False, "todo(y): check quality, spot check shows that >90% of data is left in original pos"
             np.random.shuffle(self.paths)
 
         for path in self.paths:
             # sent_stream is an iterator
             sent_stream = self.get_sent_stream(path)
+
+            sents = self.vocab.encode_file(path, add_double_eos=True)
+            batch_split = sents.split(len(sents) // self.bsz)  # each position in batch gets its own stream
             for batch in self.stream_iterator(sent_stream):
                 yield batch
 
@@ -227,8 +234,12 @@ class Corpus:
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=False, add_double_eos=True)
         elif self.dataset == 'wiki':
-            valid_path = sorted(file_paths)[42]
-            test_path = sorted(file_paths)[1337]
+            if g.args.test:  # in testing mode we use smaller dataset
+                valid_path = sorted(file_paths)[1]
+                test_path = sorted(file_paths)[1]
+            else:
+                valid_path = sorted(file_paths)[42]
+                test_path = sorted(file_paths)[1337]
             self.valid = self.vocab.encode_file(valid_path, ordered=True)
             self.test = self.vocab.encode_file(test_path, ordered=True)
             self.train = list(set(file_paths) - set((valid_path, test_path)))
@@ -243,6 +254,7 @@ class Corpus:
     def get_dist_iterator(self, split: str, *args, rank: int = 0, max_rank: int = 1, **kwargs):
         """Get an iterator that only operates on rank//max_rank independent subset of the data."""
         data = self.__getattribute__(split)
+        assert len(data), f"data attribute '{split}' empty for iterator.dataset={self.dataset}"
         subset = list(chunk(data, max_rank))[rank]
         if self.dataset in ['lm1b', 'wiki']:
             if split == 'train':
