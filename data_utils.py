@@ -289,7 +289,7 @@ class Corpus:
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=True, add_eos=False)
         elif self.dataset == 'lm1b':
-            self.train = train_paths
+            self.train = natsort.natsorted(train_paths)
             self.valid = self.vocab.encode_file(
                 os.path.join(path, 'valid.txt'), ordered=False, add_double_eos=True)
             self.test = self.vocab.encode_file(
@@ -312,6 +312,8 @@ class Corpus:
                 os.path.join(path, 'wiki.valid.tokens'), ordered=True, add_eos=False)
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'wiki.test.tokens'), ordered=True, add_eos=False)
+
+        self.train_files = natsort.natsorted(self.train_files)
 
     def get_dist_iterator(self, split: str, *args, rank: int = 0, max_rank: int = 1, **kwargs):
         """Get an iterator that only operates on rank'th independent subset of the data."""
