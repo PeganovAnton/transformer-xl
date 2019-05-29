@@ -2,6 +2,7 @@ import contextlib
 import math
 import os
 from collections import Counter, OrderedDict
+from typing import List
 
 import portalocker
 import torch
@@ -30,7 +31,7 @@ class Vocab:
         else:
             symbols = line.split(self.delimiter)
 
-        if add_double_eos: # lm1b
+        if add_double_eos:  # lm1b
             return ['<S>'] + symbols + ['<S>']
         elif add_eos:
             return symbols + ['<eos>']
@@ -105,8 +106,7 @@ class Vocab:
             for idx, line in enumerate(f):
                 if verbose and idx > 0 and idx % 500000 == 0:
                     print('    line {}'.format(idx))
-                symbols = self.tokenize(line, add_eos=add_eos,
-                    add_double_eos=add_double_eos)
+                symbols = self.tokenize(line, add_eos=add_eos, add_double_eos=add_double_eos)
                 encoded.append(self.convert_to_tensor(symbols))
 
         if ordered:
@@ -170,6 +170,7 @@ class Vocab:
         # Force a multiple of 8 for efficient CUDA.
         return math.ceil(len(self.idx2sym) / 8) * 8
 
+
 class OpenAIVocab(Vocab):
     def __init__(self, max_size, vocab_file=None):
         from pytorch_pretrained_bert import GPT2Tokenizer
@@ -189,19 +190,22 @@ class OpenAIVocab(Vocab):
         pass
 
     def encode_file(self, path, ordered=False, verbose=False, add_eos=True, add_double_eos=False) -> torch.LongTensor:
+        """Encodes file using BPE encoding, caches intermediate result."""
         cached = path + '.tokenized'
         if os.path.exists(cached):
             return torch.load(cached)
         print(f'encoding file {path} ...')
         assert os.path.exists(path), f"{path} doesn't exist"
 
-        with open(path, encoding='utf-8') as f:
-            # Suppress warnings about length.
-            with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
-                out = torch.LongTensor(self.tokenizer.encode(f.read()) + [self.EOT])
-                with portalocker.Lock(cached, timeout=60) as _:
-                    torch.save(out, cached)
-                return out
+        text = open(path, encoding='utf-8').read()
+
+        # Suppress warnings about length.
+        with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
+            tokens: List[int] = self.tokenizer.encode(text) + [self.EOT]
+            out = torch.LongTensor(tokens)
+            with portalocker.Lock(cached, timeout=60) as _:
+                torch.save(out, cached)
+            return out
 
 
 class GoogleBPEVocab(Vocab):

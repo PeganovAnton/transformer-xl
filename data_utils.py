@@ -2,14 +2,15 @@
 
 import glob
 import os
+from typing import List, Generator, TypeVar, Optional, Sequence
 
+import natsort
 import numpy as np
 import portalocker
 import torch
 
-from utils.vocabulary import OpenAIVocab, Vocab
-
 import globals as g
+from utils.vocabulary import OpenAIVocab, Vocab
 
 
 class LMOrderedIterator:
@@ -57,6 +58,8 @@ class LMOrderedIterator:
         return data, target, seq_len
 
     def __iter__(self):
+        while self.offset >= self.data.size(0) - 1:  # wrap around
+            self.offset -= self.data.size(0) - 1
         for i in range(self.offset, self.data.size(0) - 1, self.bptt):
             self.offset = i + self.bptt   # this ensures iter remembers position on unpickling
             yield self.get_batch(i)
@@ -89,7 +92,9 @@ class LMShuffledIterator:
         # streams for each data in the batch
         streams = [None] * self.bsz
 
+        # noinspection PyArgumentList
         data = torch.LongTensor(self.bptt, self.bsz)
+        # noinspection PyArgumentList
         target = torch.LongTensor(self.bptt, self.bsz)
 
         n_retain = 0
@@ -142,51 +147,105 @@ class LMShuffledIterator:
             yield batch
 
 
-class LMMultiFileIterator(LMShuffledIterator):
-    def __init__(self, paths, vocab, bsz, bptt, device='cpu', ext_len=None,
-                 shuffle=False):
+class LMMultiFileIterator:
+    def __init__(self, paths: Sequence[str], vocab: Vocab, bsz: int, bptt: int, device='cpu', ext_len=None,
+                 shuffle: bool = False):
 
         self.paths = paths
         self.vocab = vocab
 
         self.bsz = bsz
-        self.bptt = bptt
+        self.bptt = bptt    # same as target length
         self.ext_len = ext_len if ext_len is not None else 0
+
+        assert self.ext_len == 0  # https://github.com/kimiyoung/transformer-xl/issues/81
 
         self.device = device
         self.shuffle = shuffle
 
-    def get_sent_stream(self, path):
-        sents = self.vocab.encode_file(path, add_double_eos=True)
-        if self.shuffle:
-            assert False, "todo(y): check quality, spot check shows that >90% of data is left in original pos"
-            np.random.shuffle(sents)
-        # Create virtual sentences for wikipedia data.
-        # TODO: Load a few files at a time, then chunk?
-        if type(sents) == torch.Tensor:
-            return iter(sents.split(len(sents) // self.bsz))
-        else:
-            assert False, "todo(y): find out when this is true"
-        return iter(sents)
+        # fields to store positions of iterator
+        self.file_offset = 0
+        self.stream_offsets = [0]*self.bsz
 
     def __iter__(self):
         if self.shuffle:
-            assert False, "todo(y): check quality, spot check shows that >90% of data is left in original pos"
             np.random.shuffle(self.paths)
+            assert False, "todo(y): check quality, spot check shows that >90% of data is left in original pos"
 
-        for path in self.paths:
-            # sent_stream is an iterator
-            sent_stream = self.get_sent_stream(path)
+        for file_num in range(self.file_offset, len(self.paths)):
+            self.file_offset = file_num
+            path = self.paths[file_num]
 
-            sents = self.vocab.encode_file(path, add_double_eos=True)
-            batch_split = sents.split(len(sents) // self.bsz)  # each position in batch gets its own stream
-            for batch in self.stream_iterator(sent_stream):
-                yield batch
+            sents: torch.LongTensor = self.vocab.encode_file(path, add_double_eos=True)
+            if self.shuffle:
+                np.random.shuffle(sents)
+                assert False, 'todo(y): check quality, spot check shows that >90% of data is left in original pos'
+
+            # one stream per batch position, advance position to account for text already consumed
+            # noinspection PyTypeChecker
+            streams = list(sents.split(len(sents) // self.bsz)) # divides evenly, uneven part goes into bsz+1 pos
+            for batch_pos in range(self.bsz):
+                streams[batch_pos] = streams[batch_pos][self.stream_offsets[batch_pos]:]
+
+            # noinspection PyArgumentList
+            data = torch.LongTensor(self.bptt, self.bsz)  # unitialized tensor of bptt x bsz shape
+            # noinspection PyArgumentList
+            target = torch.LongTensor(self.bptt, self.bsz)
+            n_retain = 0
+
+            try:
+                while True:
+                    # data   : [n_retain+bptt x bsz]
+                    # target : [bptt x bsz]
+                    data[n_retain:].fill_(-1)
+                    target.fill_(-1)
+
+                    # create new batch by lopping off bsz pieces from continuous streams
+                    for batch_pos in range(self.bsz):
+                        n_filled = 0
+
+                        # fill bptt (tgt len) token for each position in the batch
+                        while n_filled < self.bptt:
+                            if len(streams[batch_pos]) <= 1:
+                                raise StopIteration
+
+                            # number of new tokens to fill in
+                            n_new = min(len(streams[batch_pos]) - 1, self.bptt - n_filled)
+                            # first n_retain tokens are retained from last batch
+                            data[n_retain + n_filled:n_retain + n_filled + n_new, batch_pos] = \
+                                streams[batch_pos][:n_new]
+                            target[n_filled:n_filled + n_new, batch_pos] = \
+                                streams[batch_pos][1:n_new + 1]
+                            streams[batch_pos] = streams[batch_pos][n_new:]  # advance stream position
+                            self.stream_offsets[batch_pos] += n_new
+
+                            n_filled += n_new
+
+                    data = data.to(self.device)
+                    target = target.to(self.device)
+                    yield data, target, self.bptt
+
+                    n_retain = min(data.size(0), self.ext_len)
+                    if n_retain > 0:
+                        data[:n_retain] = data[-n_retain:]
+                    data.resize_(n_retain + self.bptt, data.size(1))
+
+            except StopIteration:
+                pass
 
 
 class Corpus:
+    train_files: List[str]
+    vocab: Vocab
+    train: Optional[torch.LongTensor]
+    valid: Optional[torch.LongTensor]
+    test: Optional[torch.LongTensor]
+
     def __init__(self, path, dataset, use_bpe, *args, **kwargs):
         self.dataset = dataset
+        train_paths = None
+        file_paths = None
+
         if use_bpe:
             self.vocab = OpenAIVocab(kwargs['max_size'], kwargs.get('vocab_file'))
         else:
@@ -209,6 +268,8 @@ class Corpus:
             file_path_pattern = os.path.join(path, '*/wiki_*.txt')
             file_paths = glob.glob(file_path_pattern)
             assert file_paths, f'Nothing found at {file_path_pattern}'
+
+        file_paths = natsort.natsorted(file_paths)
 
             # the vocab will load from file when build_vocab() is called
         self.vocab.build_vocab()
@@ -235,14 +296,15 @@ class Corpus:
                 os.path.join(path, 'test.txt'), ordered=False, add_double_eos=True)
         elif self.dataset == 'wiki':
             if g.args.test:  # in testing mode we use smaller dataset
-                valid_path = sorted(file_paths)[1]
-                test_path = sorted(file_paths)[1]
+                valid_path = sorted(file_paths)[-1]
+                test_path = sorted(file_paths)[-1]
             else:
                 valid_path = sorted(file_paths)[42]
                 test_path = sorted(file_paths)[1337]
             self.valid = self.vocab.encode_file(valid_path, ordered=True)
             self.test = self.vocab.encode_file(test_path, ordered=True)
-            self.train = list(set(file_paths) - set((valid_path, test_path)))
+            self.train = None
+            self.train_files = list(set(file_paths) - {valid_path, test_path})
         elif self.dataset in ['wt103-normal']:
             self.train = self.vocab.encode_file(
                 os.path.join(path, 'wiki.train.tokens'), ordered=True, add_eos=False)
@@ -252,13 +314,24 @@ class Corpus:
                 os.path.join(path, 'wiki.test.tokens'), ordered=True, add_eos=False)
 
     def get_dist_iterator(self, split: str, *args, rank: int = 0, max_rank: int = 1, **kwargs):
-        """Get an iterator that only operates on rank//max_rank independent subset of the data."""
-        data = self.__getattribute__(split)
+        """Get an iterator that only operates on rank'th independent subset of the data."""
+        if split == 'train':
+            data = self.train
+        elif split == 'valid':
+            data = self.valid
+        else:
+            assert split == 'test'
+            data = self.test
+
+        # special handling for large datasets, don't load training set in memory
+        if self.dataset in ['lm1b', 'wiki'] and split == 'train':
+            file_subset = list(chunk(self.train_files, max_rank))[rank]
+            return LMMultiFileIterator(file_subset, self.vocab, *args, **kwargs)
+
+        # noinspection PyTypeChecker
         assert len(data), f"data attribute '{split}' empty for iterator.dataset={self.dataset}"
+        # noinspection PyTypeChecker
         subset = list(chunk(data, max_rank))[rank]
-        if self.dataset in ['lm1b', 'wiki']:
-            if split == 'train':
-                return LMMultiFileIterator(subset, self.vocab, *args, **kwargs)
         return LMOrderedIterator(subset, *args, **kwargs)
 
     def get_iterator(self, split: str, *args, **kwargs):
@@ -286,6 +359,8 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
     """Factory method for Corpus.
 
     Arguments:
+        max_size: .
+        use_bpe: OpenAI's BPE encoding
         datadir: Where does the data live?
         dataset: eg 'wt103' which tells the Corpus how to parse the data.
     """
@@ -317,7 +392,10 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
     return corpus
 
 
-def chunk(a: list, n: int):
+_T = TypeVar('_T')
+
+
+def chunk(a: Sequence[_T], n: int) -> Generator[Sequence[_T], None, None]:
     """Split `a` into `n` chunks, with the last bucket taking the remaining.
     
     https://stackoverflow.com/a/2135920

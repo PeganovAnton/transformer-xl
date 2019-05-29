@@ -12,9 +12,9 @@ import time
 from collections import OrderedDict
 from typing import Optional, List, Dict
 
-import pytest
-
+import dill as dill
 import numpy as np
+import pytest
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -30,6 +30,7 @@ from eval import evaluate
 from fp16_opt import FP16_Module, FP16_Optimizer
 from lr_finder import LRFinder
 from mem_transformer import MemTransformerLM
+
 
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
 parser.add_argument('--logdir', type=str, default='/tmp/default', help="where logs and events go")
@@ -490,7 +491,8 @@ class TrainState(util.FrozenClass):
     tr_iter: Optional[LMOrderedIterator] = None
     scheduler: Optional[optim.lr_scheduler.CosineAnnealingLR] = None
     train_step: int = 0
-    last_epoch: int = 1
+    last_epoch: int = 0
+    last_log_step: int = 0
     token_count: int = 0  # number of tokens that have been consumed by the model training
     best_val_loss: Optional[float] = None
     partial_epoch: bool = False
@@ -533,7 +535,11 @@ def save_state(state: TrainState, fn: str):
     state.rng_state = [method() for method in get_rng_methods]
     state.set_rng_methods = set_rng_methods
 
+    # save tr iterator using dill
+    state_tr_iter = state.tr_iter
+
     torch.save(state, fn)
+    dill.dump(state_tr_iter, open('/tmp/dill', 'wb'))
 
     # Restore model/optimizer to original versions
     state.model = state_model
@@ -577,6 +583,8 @@ def load_state(fn):
     for method, rng_state in zip(state.set_rng_methods, state.rng_state):
         method(rng_state)
         pass
+
+    # state.tr_iter = dill.load(open('/tmp/dill', 'rb'))
 
     return state
 
@@ -652,7 +660,7 @@ def main_loop():
     # At any point you can hit Ctrl + C to break out of training early.
     try:
         for epoch in itertools.count(start=g.state.last_epoch):
-            print('training epoch', epoch)
+            print(f"epoch -- {epoch}, token_count -- {g.state.token_count}")
             model.train()
 
             log_tb('sizes/batch_size', args.batch_size)
@@ -686,7 +694,8 @@ def main_loop():
                     batch_total = util.dist_sum_tensor(batch_total)  # global batch size
 
                 total_tokens = util.toscalar(batch_total) * seq_len
-                should_log = g.state.train_step < args.verbose_log_steps or (g.state.train_step+1) % args.log_interval == 0
+                should_log = g.state.train_step < args.verbose_log_steps or (
+                            g.state.train_step + 1) % args.log_interval == 0
 
                 model.zero_grad()
 
@@ -707,9 +716,9 @@ def main_loop():
                 accumulated_loss += loss0
 
                 if args.fp16:
-                   optimizer.clip_master_grads(args.clip)
+                    optimizer.clip_master_grads(args.clip)
                 else:
-                   torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
                 optimizer.step()
                 g.state.train_step += 1
@@ -814,7 +823,7 @@ def main_loop():
 
 
 simple_args_str = "--local --data=testdata --batch_size=1 --verbose_log_steps=0 --n_layer=1 --d_model=10 --d_inner=2 " \
-                  "--max_tokens=4 --tgt_len=1 --scheduler=constant "
+                  "--max_tokens=4 --tgt_len=1 --scheduler=constant --log_interval=20"
 simple_args = parse_args(simple_args_str.strip().split())
 
 
@@ -828,7 +837,7 @@ def test_checkpoint():
     # run halfway and save checkpoint
     g.args.max_tokens = 2
     g.args.save_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses2 = main_loop()
     save_state(g.state, g.args.save_state_fn)
 
@@ -836,12 +845,12 @@ def test_checkpoint():
     g.args.max_tokens = 4
     g.args.save_state_fn = None
     g.args.load_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses3 = main_loop()
 
     util.assert_close(losses3[0], losses1[len(losses2)])
     util.assert_close(losses3[-1], losses1[-1])
-    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
 
 
 def test_checkpoint_dropout():
@@ -855,7 +864,7 @@ def test_checkpoint_dropout():
     # run halfway and save checkpoint
     g.args.max_tokens = 2
     g.args.save_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses2 = main_loop()
     save_state(g.state, g.args.save_state_fn)
 
@@ -863,12 +872,12 @@ def test_checkpoint_dropout():
     g.args.max_tokens = 4
     g.args.save_state_fn = None
     g.args.load_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses3 = main_loop()
 
     util.assert_close(losses3[0], losses1[len(losses2)])
     util.assert_close(losses3[-1], losses1[-1])
-    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
 
 
 def test_checkpoint_lamb():
@@ -884,7 +893,7 @@ def test_checkpoint_lamb():
     # run halfway and save checkpoint
     g.args.max_tokens = 2
     g.args.save_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses2 = main_loop()
     save_state(g.state, g.args.save_state_fn)
 
@@ -892,13 +901,13 @@ def test_checkpoint_lamb():
     g.args.max_tokens = 4
     g.args.save_state_fn = None
     g.args.load_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses3 = main_loop()
 
     util.assert_close(losses3[0], losses1[len(losses2)])
     util.assert_close(losses3[-1], losses1[-1])
 
-    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
 
 
 def test_checkpoint_fp16_lamb():
@@ -914,7 +923,7 @@ def test_checkpoint_fp16_lamb():
     # run halfway and save checkpoint
     g.args.max_tokens = 20
     g.args.save_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses2 = main_loop()
     save_state(g.state, g.args.save_state_fn)
 
@@ -922,16 +931,21 @@ def test_checkpoint_fp16_lamb():
     g.args.max_tokens = 40
     g.args.save_state_fn = None
     g.args.load_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses3 = main_loop()
 
     util.assert_close(losses3[0], losses1[len(losses2)])
     util.assert_close(losses3[-1], losses1[-1])
 
-    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
 
 
-def test_checkpoint_wiki():
+def test_checkpoint_wiki_small():
+    os.system('rm testdata/wikiextracted/AA/wiki_00.txt.tokenized')
+    os.system('rm testdata/wikiextracted/AA/wiki_01.txt.tokenized')
+    os.system('rm testdata/wikiextracted/AA/wiki_02.txt.tokenized')
+    os.system('rm testdata/wikiextracted/AA/wiki_03.txt.tokenized')
+    os.system('rm testdata/wikiextracted/cache.pt.bpe')
     g.args = copy.deepcopy(simple_args)
     g.args.test = 'yes'
 
@@ -939,7 +953,7 @@ def test_checkpoint_wiki():
     g.args.dataset = 'wiki'
     g.args.dropatt = 0.1
     g.args.dropout = 0.1
-    g.args.bpe = True    # wiki requires BPE
+    g.args.bpe = True  # wiki requires BPE
 
     g.args.optim = 'lamb'
 
@@ -953,7 +967,7 @@ def test_checkpoint_wiki():
     # run halfway and save checkpoint
     g.args.max_tokens = 2
     g.args.save_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses2 = main_loop()
     save_state(g.state, g.args.save_state_fn)
 
@@ -961,14 +975,111 @@ def test_checkpoint_wiki():
     g.args.max_tokens = 4
     g.args.save_state_fn = None
     g.args.load_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses3 = main_loop()
 
     util.assert_close(losses3[0], losses1[len(losses2)])
     util.assert_close(losses3[-1], losses1[-1])
 
-    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
 
+
+def test_checkpoint_wiki():
+    os.system('rm testdata/wikiextracted/AA/wiki_00.txt.tokenized')
+    os.system('rm testdata/wikiextracted/AA/wiki_01.txt.tokenized')
+    os.system('rm testdata/wikiextracted/AA/wiki_02.txt.tokenized')
+    os.system('rm testdata/wikiextracted/AA/wiki_03.txt.tokenized')
+    os.system('rm testdata/wikiextracted/cache.pt.bpe')
+    g.args = copy.deepcopy(simple_args)
+    g.args.test = 'yes'
+
+    g.args.batch_size = 2
+    g.args.tgt_len = 2
+
+    g.args.data = 'testdata/wikiextracted'
+    g.args.dataset = 'wiki'
+    g.args.dropatt = 0.1
+    g.args.dropout = 0.1
+    g.args.bpe = True  # wiki requires BPE
+
+    g.args.optim = 'lamb'
+
+    logging_setup()
+    data_setup()
+
+    # 36 words total, 8 in first file
+    g.args.max_tokens = 30
+
+    losses1 = main_loop()
+    print(losses1)
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 10
+    g.args.save_state_fn = '/tmp/state.pt'
+    data_setup()  # reset iterators
+    losses2 = main_loop()
+    save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 30
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    data_setup()  # reset iterators
+    losses3 = main_loop()
+
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
+
+
+def test_checkpoint_wiki_multiepoch():
+    os.system('rm testdata/wikiextracted/AA/wiki_00.txt.tokenized')
+    os.system('rm testdata/wikiextracted/AA/wiki_01.txt.tokenized')
+    os.system('rm testdata/wikiextracted/AA/wiki_02.txt.tokenized')
+    os.system('rm testdata/wikiextracted/AA/wiki_03.txt.tokenized')
+    os.system('rm testdata/wikiextracted/cache.pt.bpe')
+    g.args = copy.deepcopy(simple_args)
+    g.args.test = 'yes'
+
+    g.args.batch_size = 2
+    g.args.tgt_len = 2
+
+    g.args.data = 'testdata/wikiextracted'
+    g.args.dataset = 'wiki'
+    g.args.dropatt = 0.1
+    g.args.dropout = 0.1
+    g.args.bpe = True  # wiki requires BPE
+
+    g.args.optim = 'lamb'
+
+    logging_setup()
+    data_setup()
+
+    # 36 words total, 8 in first file
+    g.args.max_tokens = 50
+
+    losses1 = main_loop()
+    print(losses1)
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 40
+    g.args.save_state_fn = '/tmp/state.pt'
+    data_setup()  # reset iterators
+    losses2 = main_loop()
+    save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 50
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    data_setup()  # reset iterators
+    losses3 = main_loop()
+
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="fp16 tests require GPU")
@@ -983,7 +1094,7 @@ def test_checkpoint_fp16():
     # run halfway and save checkpoint
     g.args.max_tokens = 2
     g.args.save_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses2 = main_loop()
     save_state(g.state, g.args.save_state_fn)
 
@@ -1000,7 +1111,7 @@ def test_checkpoint_fp16():
     util.assert_close(losses3[0], losses1[len(losses2)])
     util.assert_close(losses3[-1], losses1[-1])
 
-    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="fp16 tests require GPU")
@@ -1017,7 +1128,7 @@ def test_checkpoint_fp16_dropout():
     # run halfway and save checkpoint
     g.args.max_tokens = 20
     g.args.save_state_fn = '/tmp/state.pt'
-    data_setup()   # reset iterators
+    data_setup()  # reset iterators
     losses2 = main_loop()
     save_state(g.state, g.args.save_state_fn)
 
@@ -1034,7 +1145,7 @@ def test_checkpoint_fp16_dropout():
     util.assert_close(losses3[0], losses1[len(losses2)])
     util.assert_close(losses3[-1], losses1[-1])
 
-    g.logger.info(f"Discrepancy was {(losses3[-1]-losses1[-1])/losses1[-1]}")
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
 
 
 if __name__ == '__main__':

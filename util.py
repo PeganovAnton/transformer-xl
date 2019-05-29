@@ -3,14 +3,14 @@ import copy
 import datetime
 import os
 import sys
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple, Sequence, Iterator
 
 from torch.nn import Module
 
 import pytz
 import torch
 import torch.distributed as dist
-from torch import optim
+from torch import optim, nn
 
 import globals as g
 from data_utils import LMOrderedIterator
@@ -285,10 +285,32 @@ def get_parameters(var):
 
 class FrozenClass(object):
     __isfrozen = False
+
     def __setattr__(self, key, value):
         if self.__isfrozen and not hasattr(self, key):
-            raise TypeError( "%r is a frozen class" % self )
+            raise TypeError("%r is a frozen class" % self)
         object.__setattr__(self, key, value)
 
     def _freeze(self):
         self.__isfrozen = True
+
+
+class SaveableIteratorMaker:
+    """Iterator over sequences that remembers its position on unpickling"""
+    def __init__(self, data: Sequence, offset: int = 0):
+        self.data = data
+        self.offset = offset
+
+    def __iter__(self):
+        # wrap iterator
+        #        while self.offset >= len(self.data):
+        #            self.offset -= len(self.data)
+
+        for i in range(self.offset, len(self.data)):
+            self.offset = i
+            yield self.data[i]
+
+
+def saveable_iterator(data: Sequence) -> Iterator:
+    return iter(SaveableIteratorMaker(data))
+
