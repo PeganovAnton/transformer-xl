@@ -1,11 +1,11 @@
-#torch==1.1.0
+torch==1.1.0
 pytz
 numpy
 tqdm
 pytorch_pretrained_bert
 tensorboardX
 tensorflow  # needed for tensorboardX
-pytorch-lamb
+pytorch-lamb==1.0.0
 # TODO: remove git repo when master is pushed
 git+https://github.com/8enmann/pytorch-pretrained-BERT@patch-2
 #pytorch-pretrained-bert

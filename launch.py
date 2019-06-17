@@ -114,13 +114,10 @@ one_small_machine_wiki = {
     }
 }
 
-# Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
-# Differences: fp16, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
-# logs: ben-large-lamb-slow
 one_machine_fp16_large = {
     'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 16,
+    'local_batch_size': 144,
     'machines': 1,
     'large': True,
 }
@@ -129,7 +126,7 @@ one_machine_fp16_large = {
 four_machine_fp16_large = {
     'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 16,
+    'local_batch_size': 144,
     'machines': 4,
     'large': True,
 }
@@ -138,7 +135,7 @@ four_machine_fp16_large = {
 eight_machine_fp16_large = {
     'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 16,
+    'local_batch_size': 144,
     'machines': 8,
     'large': True,
 }
@@ -272,8 +269,8 @@ LARGE_ARGS = {
     'dropatt': 0.2,
     'optim': 'lamb',
     'warmup_tokens': 0,
-    'tgt_len': 384,
-    'mem_len': 384,
+    'tgt_len': 128,
+    'mem_len': 0,
     'eval_tgt_len': 128,
     'fp16': True,
     'dynamic_loss_scale': True,
@@ -371,6 +368,7 @@ def main():
         'adaptive': True,
         'log_interval': 100,
         'eval_interval': 500,
+        'wd': .01,
         'max_tokens': int(1.5e9),
         'logdir': job.logdir,
         'lr': lr,
@@ -397,8 +395,9 @@ def main():
         worker_params.update({
             'data': 'data/wikiextracted',
             'dataset': 'wiki',
-            'dropatt': 0.1,
-            'dropout': 0.1,
+            'dropatt': 0,
+            'dropout': 0,
+            'scheduler': 'constant',
         })
 
     if args.bpe:
