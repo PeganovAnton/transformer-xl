@@ -115,29 +115,38 @@ one_small_machine_wiki = {
 }
 
 one_machine_fp16_large = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 144,
     'machines': 1,
     'large': True,
+    'extra_worker_params': {
+        'lr': 5/(2**2.5 * 1e3), # From LAMB paper
+        'warmup_tokens': 1e6, # Not from paper
+    }
 }
 
 # fork of one_machine_fp16_large
 four_machine_fp16_large = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 144,
     'machines': 4,
     'large': True,
+    'extra_worker_params': {
+        'lr': 5/(2**1.5 * 1e3), # From LAMB paper
+        'warmup_tokens': 2e6,
+    }
 }
 
 # logs: ben-eight.01
 eight_machine_fp16_large = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 144,
     'machines': 8,
     'large': True,
+    'extra_worker_params': {
+        'lr': 5/(2**.5 * 1e3), # From LAMB paper
+        'warmup_tokens': 4e6,
+    }
 }
 
 # /ncluster/runs.new/yaro-fp16.09
@@ -351,7 +360,7 @@ def main():
             f'pip install -r requirements.txt')
 
     local_batch_size = config.local_batch_size
-    base_lr = config.base_lr
+    base_lr = config.base_lr or 0
 
     num_workers = num_gpus_per_machine * config.machines
     global_batch_size = local_batch_size * num_workers
