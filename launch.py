@@ -46,7 +46,7 @@ args = parser.parse_args()
 
 # default environment settings, should change rarely since they affect
 # all configs
-IMAGE_NAME = 'cybertronai01'
+IMAGE_NAME = 'cybertronai02'
 # CONDA_ENV = 'pytorch_april_nccl237'
 CONDA_ENV = 'pytorch_p36'
 
@@ -354,9 +354,6 @@ def main():
     job.rsync('.')
     job.run(f'killall python || echo failed && '  # kill previous run
             f'source activate {config.conda_env} && ' +
-            # protobuf https://github.com/tensorflow/models/issues/3995
-            f'pip uninstall -y protobuf && '+
-            f'pip install -U protobuf && '+
             f'pip install -r requirements.txt')
 
     local_batch_size = config.local_batch_size
