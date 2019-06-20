@@ -499,6 +499,9 @@ def train(va_iter, optimizer, scheduler):
                 elif args.scheduler == 'cosine':
                     # Divide by 1e6 for numerical stability.
                     scheduler.step(global_token_count // 1e6)
+                else:
+                    # Handle post-warmup case.
+                    optimizer.param_groups[0]['lr'] = args.lr
             else:
                 scheduler.step(global_token_count)
 
@@ -682,23 +685,6 @@ def main():
 
     # Eval one more time.
     evaluate_and_log(optimizer, va_iter, 'val', train_step=-1)
-
-    # Load the best saved model.
-    logger.info("Loading best checkpoint")
-    model_file = os.path.join(args.logdir, 'model-best.pt')
-    if os.path.exists(model_file):
-        with open(model_file, 'rb') as model_f:
-            with timeit('load'):
-                if args.local:
-                    model = torch.load(model_f)
-                else:
-                    model = torch.load(model_f, map_location=lambda storage, loc: storage.cuda(args.local_rank))
-                    model = DistributedDataParallel(
-                        model,
-                        device_ids=[args.local_rank],
-                        output_device=args.local_rank)
-    else:
-        logger.warn('no model file, using current model for loss')
 
     # Run on test data.
     evaluate_and_log(optimizer, te_iter, 'test', -1)

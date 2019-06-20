@@ -133,7 +133,7 @@ four_machine_fp16_large = {
     'large': True,
     'extra_worker_params': {
         'lr': 5/(2**1.5 * 1e3), # From LAMB paper
-        'warmup_tokens': 2e6,
+        'warmup_tokens': 4e6,
     }
 }
 
@@ -145,7 +145,7 @@ eight_machine_fp16_large = {
     'large': True,
     'extra_worker_params': {
         'lr': 5/(2**.5 * 1e3), # From LAMB paper
-        'warmup_tokens': 4e6,
+        'warmup_tokens': 16e6,
     }
 }
 
