@@ -271,6 +271,8 @@ class Corpus:
         elif self.dataset == 'git':
             file_path_pattern = os.path.join(path, 'git_*.txt')
             file_paths = glob.glob(file_path_pattern)
+            valid_path = os.path.join(path, 'valid.txt')
+            test_path = os.path.join(path, 'test.txt')
             assert file_paths, f'Nothing found at {file_path_pattern}'
 
         file_paths = natsort.natsorted(file_paths)
@@ -298,17 +300,22 @@ class Corpus:
                 os.path.join(path, 'valid.txt'), ordered=False, add_double_eos=True)
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=False, add_double_eos=True)
-        elif self.dataset in ['wiki', 'git']:
+        elif self.dataset == 'wiki':
             if g.args.test:  # in testing mode we use smaller dataset
                 valid_path = sorted(file_paths)[-1]
                 test_path = sorted(file_paths)[-1]
             else:
                 valid_path = sorted(file_paths)[42]
-                test_path = sorted(file_paths)[17]
+                test_path = sorted(file_paths)[1337]
             self.valid = self.vocab.encode_file(valid_path, ordered=True)
             self.test = self.vocab.encode_file(test_path, ordered=True)
             self.train = None
             self.train_files = list(set(file_paths) - {valid_path, test_path})
+        elif self.dataset == 'git':
+            self.valid = self.vocab.encode_file(valid_path, ordered=True)
+            self.test = self.vocab.encode_file(test_path, ordered=True)
+            self.train = None
+            self.train_files = file_paths
         elif self.dataset in ['wt103-normal']:
             self.train = self.vocab.encode_file(
                 os.path.join(path, 'wiki.train.tokens'), ordered=True, add_eos=False)
