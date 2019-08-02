@@ -40,7 +40,7 @@ parser.add_argument('--run_name', type=str, default='txl', help="name of run")
 parser.add_argument('--data', type=str, default='../data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--dataset', type=str, default='wt103',
-                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki', 'wt103-normal'],
+                    choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki', 'wt103-normal', 'git'],
                     help='dataset name')
 parser.add_argument('--n_layer', type=int, default=12,
                     help='number of total layers')
@@ -206,8 +206,8 @@ def parse_args(cmd_args=sys.argv[1:]):
     # adaptive softmax / embedding
     g.cutoffs, g.tie_projs = [], [False]
     if args.adaptive:
-        assert args.dataset in ['wt103', 'lm1b', 'wt2', 'wiki']
-        if args.dataset in ('wt103', 'wt2', 'wiki'):
+        assert args.dataset in ['wt103', 'lm1b', 'wt2', 'wiki', 'git']
+        if args.dataset in ('wt103', 'wt2', 'wiki', 'git'):
             if args.bpe:
                 g.cutoffs = [5000, 10000, 40000]
             else:

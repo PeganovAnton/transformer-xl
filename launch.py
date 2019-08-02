@@ -22,6 +22,8 @@ parser.add_argument('--skip_setup', action='store_true',
 
 parser.add_argument('--wiki', action='store_true',
                     help='Train on all of wikipedia.')
+parser.add_argument('--git', action='store_true',
+                    help='Train on git dataset.')
 parser.add_argument('--bpe', action='store_true',
                     help='Use BPE to reduce vocab instead of adaptive softmax div')
 
@@ -111,6 +113,24 @@ one_small_machine_wiki = {
         'scheduler': 'constant',
         'data': 'data/wikiextracted',
         'dataset': 'wiki',
+    }
+}
+
+one_small_machine_git = {
+    'base_lr': 0.001 / 4,  # Divide by 2 to counteract batch adjustment
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    # 'checkpoint': '/ncluster/runs/txl.09/model-best.pt',  # us-east-1
+    # 'optim_state_dict': '/ncluster/runs/txl.09/optimizer-best.pt',
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e6,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
     }
 }
 
@@ -352,6 +372,7 @@ def main():
             f'pip uninstall -y protobuf && '+
             f'pip install -U protobuf && '+
             f'pip install -r requirements.txt')
+    job.run('bash get_git_data.sh')
 
     local_batch_size = config.local_batch_size
     base_lr = config.base_lr
@@ -399,6 +420,14 @@ def main():
             'dataset': 'wiki',
             'dropatt': 0.1,
             'dropout': 0.1,
+        })
+    if args.git:
+        worker_params.update({
+            'data': 'data/git',
+            'dataset': 'git',
+            'div_val': 1,
+            'bpe': True,
+            'adaptive': False,
         })
 
     if args.bpe:

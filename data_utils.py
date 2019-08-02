@@ -268,6 +268,10 @@ class Corpus:
             file_path_pattern = os.path.join(path, '*/wiki_*.txt')
             file_paths = glob.glob(file_path_pattern)
             assert file_paths, f'Nothing found at {file_path_pattern}'
+        elif self.dataset == 'git':
+            file_path_pattern = os.path.join(path, 'git_*.txt')
+            file_paths = glob.glob(file_path_pattern)
+            assert file_paths, f'Nothing found at {file_path_pattern}'
 
         file_paths = natsort.natsorted(file_paths)
 
@@ -294,13 +298,13 @@ class Corpus:
                 os.path.join(path, 'valid.txt'), ordered=False, add_double_eos=True)
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'test.txt'), ordered=False, add_double_eos=True)
-        elif self.dataset == 'wiki':
+        elif self.dataset in ['wiki', 'git']:
             if g.args.test:  # in testing mode we use smaller dataset
                 valid_path = sorted(file_paths)[-1]
                 test_path = sorted(file_paths)[-1]
             else:
                 valid_path = sorted(file_paths)[42]
-                test_path = sorted(file_paths)[1337]
+                test_path = sorted(file_paths)[17]
             self.valid = self.vocab.encode_file(valid_path, ordered=True)
             self.test = self.vocab.encode_file(test_path, ordered=True)
             self.train = None
@@ -326,7 +330,7 @@ class Corpus:
             data = self.test
 
         # special handling for large datasets, don't load training set in memory
-        if self.dataset in ['lm1b', 'wiki'] and split == 'train':
+        if self.dataset in ['lm1b', 'wiki', 'git'] and split == 'train':
             file_subset = list(chunk(self.train_files, max_rank))[rank]
             return LMMultiFileIterator(file_subset, self.vocab, *args, **kwargs)
 
@@ -351,7 +355,7 @@ class Corpus:
 
             kwargs['shuffle'] = True
             return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
-        if self.dataset == 'wiki':
+        if self.dataset in ['wiki', 'git']:
             if split == 'train':
                 return LMMultiFileIterator(data, self.vocab, *args, **kwargs)
             return LMOrderedIterator(data, *args, **kwargs)
@@ -412,7 +416,7 @@ def main():
     parser.add_argument('--datadir', type=str, default='../data/text8',
                         help='location of the data corpus')
     parser.add_argument('--dataset', type=str, default='text8',
-                        choices=['ptb', 'wt2', 'wt103', 'lm1b', 'enwik8', 'text8', 'wt103-normal', 'wiki'],
+                        choices=['ptb', 'wt2', 'wt103', 'lm1b', 'enwik8', 'text8', 'wt103-normal', 'wiki', 'git'],
                         help='dataset name')
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
