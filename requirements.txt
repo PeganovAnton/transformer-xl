@@ -13,6 +13,7 @@ git+https://github.com/8enmann/pytorch-pretrained-BERT@patch-2
 #pytorch-pretrained-bert
 portalocker
 attrdict
+wandb==0.8.5
 
 # ncluster + subdependencies
 ncluster

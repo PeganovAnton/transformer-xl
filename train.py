@@ -19,6 +19,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
+import wandb
 from pytorch_lamb import Lamb, log_lamb_rs
 from tensorboardX import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel
@@ -311,6 +312,13 @@ def logging_setup():
         g.event_writer = SummaryWriter(g.args.logdir)
     else:
         g.event_writer = util.NoOp()  # TB doesn't support multiple processes writing events
+
+
+def wandb_setup(model, config):
+    if util.get_global_rank() == 0:
+        wandb.init(project="Transformer-XL source code", name=g.args.run_name, sync_tensorboard=True)
+        # wandb.watch(model)
+        wandb.config.update(config)
 
 
 def data_setup():
@@ -653,6 +661,10 @@ def main_loop():
         # Uncomment find_unused_parameters and upgrade to torch 1.1 for adaptive embedding.
         model = DistributedDataParallel(model, device_ids=[args.local_rank],
                                         output_device=args.local_rank)  # , find_unused_parameters=True)
+
+    wandb_config = {}
+    wandb_config.update(vars(args))
+    wandb_setup(model, wandb_config)
 
     g.event_writer.add_text('args', str(args))  # TODO: replace with log_tb
 
