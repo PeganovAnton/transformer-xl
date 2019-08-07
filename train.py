@@ -310,15 +310,10 @@ def logging_setup():
 
     if util.get_global_rank() == 0:
         g.event_writer = SummaryWriter(g.args.logdir)
+        if not g.args.test:
+            wandb.init(project="Transformer-XL source code", name=g.args.run_name, sync_tensorboard=True)
     else:
         g.event_writer = util.NoOp()  # TB doesn't support multiple processes writing events
-
-
-def wandb_setup(model, config):
-    if util.get_global_rank() == 0:
-        wandb.init(project="Transformer-XL source code", name=g.args.run_name, sync_tensorboard=True)
-        # wandb.watch(model)
-        wandb.config.update(config)
 
 
 def data_setup():
@@ -662,9 +657,9 @@ def main_loop():
         model = DistributedDataParallel(model, device_ids=[args.local_rank],
                                         output_device=args.local_rank)  # , find_unused_parameters=True)
 
-    wandb_config = {}
-    wandb_config.update(vars(args))
-    wandb_setup(model, wandb_config)
+    if not args.test:
+        wandb.config.update(vars(args))
+        # wandb.watch(model)
 
     g.event_writer.add_text('args', str(args))  # TODO: replace with log_tb
 
