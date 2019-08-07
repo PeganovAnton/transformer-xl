@@ -276,6 +276,104 @@ def test_checkpoint_wiki_multiepoch():
     g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
 
 
+def test_checkpoint_git():
+    os.system('rm data/git/git_1.txt.tokenized')
+    os.system('rm data/git/git_2.txt.tokenized')
+    os.system('rm data/git/git_3.txt.tokenized')
+    os.system('rm data/git/git_4.txt.tokenized')
+    os.system('rm data/git/cache.pt.bpe')
+    g.args = copy.deepcopy(simple_args)
+    g.args.test = 'yes'
+
+    g.args.batch_size = 2
+    g.args.tgt_len = 2
+
+    g.args.data = 'data/git'
+    g.args.dataset = 'git'
+    g.args.dropatt = 0.1
+    g.args.dropout = 0.1
+    g.args.bpe = True  # git requires BPE
+
+    g.args.optim = 'lamb'
+
+    train.logging_setup()
+    train.data_setup()
+
+    # 49 words total, 9 in first file
+    g.args.max_tokens = 30
+
+    losses1 = train.main_loop()
+    print(losses1)
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 12
+    g.args.save_state_fn = '/tmp/state.pt'
+    train.data_setup()  # reset iterators
+    losses2 = train.main_loop()
+    train.save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 30
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    train.data_setup()  # reset iterators
+    losses3 = train.main_loop()
+
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
+
+
+def test_checkpoint_git_multiepoch():
+    os.system('rm data/git/git_1.txt.tokenized')
+    os.system('rm data/git/git_2.txt.tokenized')
+    os.system('rm data/git/git_3.txt.tokenized')
+    os.system('rm data/git/git_4.txt.tokenized')
+    os.system('rm data/wikiextracted/cache.pt.bpe')
+    g.args = copy.deepcopy(simple_args)
+    g.args.test = 'yes'
+
+    g.args.batch_size = 2
+    g.args.tgt_len = 2
+
+    g.args.data = 'data/git'
+    g.args.dataset = 'git'
+    g.args.dropatt = 0.1
+    g.args.dropout = 0.1
+    g.args.bpe = True  # git requires BPE
+
+    g.args.optim = 'lamb'
+
+    train.logging_setup()
+    train.data_setup()
+
+    # 49 words total, 9 in first file
+    g.args.max_tokens = 70
+
+    losses1 = train.main_loop()
+    print(losses1)
+
+    # run halfway and save checkpoint
+    g.args.max_tokens = 55
+    g.args.save_state_fn = '/tmp/state.pt'
+    train.data_setup()  # reset iterators
+    losses2 = train.main_loop()
+    train.save_state(g.state, g.args.save_state_fn)
+
+    # restore from checkpoint and continue to the end
+    g.args.max_tokens = 70
+    g.args.save_state_fn = None
+    g.args.load_state_fn = '/tmp/state.pt'
+    train.data_setup()  # reset iterators
+    losses3 = train.main_loop()
+
+    util.assert_close(losses3[0], losses1[len(losses2)])
+    util.assert_close(losses3[-1], losses1[-1])
+
+    g.logger.info(f"Discrepancy was {(losses3[-1] - losses1[-1]) / losses1[-1]}")
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="fp16 tests require GPU")
 def test_checkpoint_fp16():
     g.args = copy.deepcopy(simple_args)

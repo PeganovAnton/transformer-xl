@@ -312,6 +312,9 @@ class Corpus:
             self.train = None
             self.train_files = list(set(file_paths) - {valid_path, test_path})
         elif self.dataset == 'git':
+            if g.args.test:  # in testing mode we use smaller dataset
+                valid_path = sorted(file_paths)[-1]
+                test_path = sorted(file_paths)[-1]
             self.valid = self.vocab.encode_file(valid_path, ordered=True)
             self.test = self.vocab.encode_file(test_path, ordered=True)
             self.train = None
