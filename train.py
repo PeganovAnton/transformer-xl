@@ -657,9 +657,10 @@ def main_loop():
         model = DistributedDataParallel(model, device_ids=[args.local_rank],
                                         output_device=args.local_rank)  # , find_unused_parameters=True)
 
-    if not args.test:
-        wandb.config.update(vars(args))
-        # wandb.watch(model)
+    if util.get_global_rank() == 0:
+        if not args.test:
+            wandb.config.update(vars(args))
+            # wandb.watch(model)
 
     g.event_writer.add_text('args', str(args))  # TODO: replace with log_tb
 
