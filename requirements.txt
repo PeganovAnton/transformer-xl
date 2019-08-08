@@ -1,6 +1,6 @@
 dill
 pytest
-#torch==1.1.0
+torch==1.1.0
 pytz
 numpy
 tqdm

@@ -44,12 +44,13 @@ def main():
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     NL = tokenizer.encode('\n')
+    SPLIT_SYMBOL = tokenizer.encode('\n龖龖龖\n')
 
     model = model.to(device)
     model.eval()
 
     ## Init
-    data = torch.tensor(NL*4 + tokenizer.encode(args.context)).to(device)
+    data = torch.tensor(SPLIT_SYMBOL + tokenizer.encode(args.context)).to(device)
     # Turn into a batch.
     data.unsqueeze_(1)
     data = data.repeat_interleave(args.batch_size, dim=1)
