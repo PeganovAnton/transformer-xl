@@ -845,6 +845,7 @@ if __name__ == '__main__':
 
         # Eval one more time.
         evaluate_and_log(g.state.model, g.va_iter, 'val')
+        torch.distributed.barrier()  # need synchronize before next model reading
 
         # Load the best saved model.
         model_file = os.path.join(g.args.logdir, 'model-best.pt')
