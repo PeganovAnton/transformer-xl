@@ -382,7 +382,7 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
     """
     cache_filepath = os.path.join(datadir, 'cache.pt.bpe' if use_bpe else 'cache.pt')
     # Don't cache dataset for wiki, it's just a file list.
-    if os.path.exists(cache_filepath) and dataset != 'wiki':
+    if os.path.exists(cache_filepath) and dataset not in ['wiki', 'git']:
         g.logger.info('Loading cached dataset...')
         corpus = torch.load(cache_filepath)
     else:
