@@ -19,6 +19,8 @@ def main():
                         help='path to the work_dir')
     parser.add_argument('--context', type=str, default='',
                         help='Conditional generation context')
+    parser.add_argument('--context_files', type=str, default='', nargs='+',
+                        help='Rest project files')
     parser.add_argument('--top_k', type=int, default=0,
                         help='Limit sampling to top K probabilities. If 0, use all.')
     parser.add_argument('--top_p', type=float, default=0,
@@ -44,13 +46,18 @@ def main():
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     NL = tokenizer.encode('\n')
-    SPLIT_SYMBOL = tokenizer.encode('\n龖龖龖\n')
+    PROJECT_SYMBOL = tokenizer.encode('\n龖龖龖\n')
+    FILE_SYMBOL = "\n!龖!\n"
+
+    context = FILE_SYMBOL.join((open(file, 'rt', encoding='utf-8', errors='ignore').read()
+                                for file in args.context_files))
+    context = FILE_SYMBOL.join((context, args.context))
 
     model = model.to(device)
     model.eval()
 
     ## Init
-    data = torch.tensor(SPLIT_SYMBOL + tokenizer.encode(args.context)).to(device)
+    data = torch.tensor(PROJECT_SYMBOL + tokenizer.encode(context)).to(device)
     # Turn into a batch.
     data.unsqueeze_(1)
     data = data.repeat_interleave(args.batch_size, dim=1)
