@@ -17,9 +17,9 @@ def main():
     parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
     parser.add_argument('--work_dir', type=str, required=True,
                         help='path to the work_dir')
-    parser.add_argument('--context', type=str, default='',
+    parser.add_argument('--cur_file', type=str, default='',
                         help='Conditional generation context')
-    parser.add_argument('--context_files', type=str, default='', nargs='+',
+    parser.add_argument('--context_files', type=str, default=None, nargs='+',
                         help='Rest project files')
     parser.add_argument('--top_k', type=int, default=0,
                         help='Limit sampling to top K probabilities. If 0, use all.')
@@ -45,19 +45,20 @@ def main():
         model = model.float()
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-    NL = tokenizer.encode('\n')
-    PROJECT_SYMBOL = tokenizer.encode('\n龖龖龖\n')
+    # NL = tokenizer.encode('\n')
+    PROJECT_SYMBOL = '\n龖龖龖\n'
     FILE_SYMBOL = "\n!龖!\n"
 
-    context = FILE_SYMBOL.join((open(file, 'rt', encoding='utf-8', errors='ignore').read()
-                                for file in args.context_files))
-    context = FILE_SYMBOL.join((context, args.context))
+    context = FILE_SYMBOL.join([PROJECT_SYMBOL] +
+                               [f"<<!<<{file}>>!>>\n{open(file, 'rt', encoding='utf-8', errors='ignore').read()}"
+                                for file in args.context_files + [args.cur_file]])
+    context = tokenizer.encode(context)
 
     model = model.to(device)
     model.eval()
 
     ## Init
-    data = torch.tensor(PROJECT_SYMBOL + tokenizer.encode(context)).to(device)
+    data = torch.tensor(context).to(device)
     # Turn into a batch.
     data.unsqueeze_(1)
     data = data.repeat_interleave(args.batch_size, dim=1)
@@ -77,7 +78,7 @@ def main():
     for i in range(data.size(1)):
         print('=' * 40, 'sample', i + 1, '=' * 40)
         # Chop off the newlines before printing
-        print(tokenizer.decode(data[4:, i].tolist()))
+        print(tokenizer.decode(data[len(context):, i].tolist()))
 
 def predict(model, data, mems):
     tgt_len = data.size(0)
