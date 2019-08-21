@@ -281,7 +281,6 @@ def test_checkpoint_git():
     os.system('rm data/git/git_2.txt.tokenized')
     os.system('rm data/git/git_3.txt.tokenized')
     os.system('rm data/git/git_4.txt.tokenized')
-    os.system('rm data/git/cache.pt.bpe')
     g.args = copy.deepcopy(simple_args)
     g.args.test = 'yes'
 
@@ -330,7 +329,6 @@ def test_checkpoint_git_multiepoch():
     os.system('rm data/git/git_2.txt.tokenized')
     os.system('rm data/git/git_3.txt.tokenized')
     os.system('rm data/git/git_4.txt.tokenized')
-    os.system('rm data/wikiextracted/cache.pt.bpe')
     g.args = copy.deepcopy(simple_args)
     g.args.test = 'yes'
 
