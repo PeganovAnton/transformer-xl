@@ -43,12 +43,14 @@ parser.add_argument('--conda_env', type=str, default='',
                     help='use custom conda env')
 parser.add_argument('--checkpoint', type=str, default='',
                     help='restore from this checkpoint')
+parser.add_argument('--checkpoint_state', type=str, default='',
+                    help='restore from this state checkpoint')
 
 args = parser.parse_args()
 
 # default environment settings, should change rarely since they affect
 # all configs
-IMAGE_NAME = 'cybertronai01_git01'
+IMAGE_NAME = 'cybertronai01_git02'
 # CONDA_ENV = 'pytorch_april_nccl237'
 CONDA_ENV = 'pytorch_p36'
 
@@ -410,6 +412,8 @@ def main():
 
     if args.checkpoint or config.checkpoint:
         user_params['checkpoint'] = util.one_of([args.checkpoint, config.checkpoint])
+    if args.checkpoint_state:
+        user_params['load_state_fn'] = args.checkpoint_state
 
     if config.optim_state_dict:
         user_params['optim_state_dict'] = config.optim_state_dict

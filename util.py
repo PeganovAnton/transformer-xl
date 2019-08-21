@@ -117,7 +117,7 @@ def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
     of restored optimizer here.
     """
 
-    saved_model = torch.load(checkpoint_fn)
+    saved_model = torch.load(checkpoint_fn, map_location="cpu")
     state_dict = saved_model.state_dict()
     if force_fp16:
         for name in state_dict:

@@ -432,6 +432,7 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
 
     # Log all the things.
     mean_loss = total_loss / total_len
+    mean_loss = util.dist_sum_tensor(torch.tensor(mean_loss, device='cuda')).item() / util.get_world_size()
     g.logger.info('-' * 100)
     log_str = (f'| Eval {g.state.train_step // args.eval_interval:3d} at step {g.state.train_step:>8d} | ' +
                f'time: {time.time() - eval_start_time:5.2f}s ' +
@@ -449,6 +450,7 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
     if split == 'val' and (not state.best_val_loss or mean_loss < state.best_val_loss):
         g.logger.info('Saving checkpoint for new best loss')
         util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
+        save_state(g.state, os.path.join(args.logdir, "state-best.pt"))
         state.best_val_loss = mean_loss
 
 
@@ -483,7 +485,7 @@ def optimizer_setup(state):
 excluded_args = ['save_state_fn', 'load_state_fn']
 
 # arg values that can be saved as part of state, but current arg values will override it
-overridable_args = ['max_tokens']
+overridable_args = ['max_tokens', 'logdir', 'checkpoint']
 
 
 class TrainState(util.FrozenClass):
@@ -510,8 +512,8 @@ class TrainState(util.FrozenClass):
 
 def save_state(state: TrainState, fn: str):
     """Saves training state"""
-    if util.get_global_rank() != 0:
-        return
+    fn_basename, fn_ext = os.path.splitext(fn)
+    fn = f"{fn_basename}_worker{util.get_global_rank()}"
 
     # remove excluded args from state
     state_args = state.args
@@ -533,8 +535,8 @@ def save_state(state: TrainState, fn: str):
         state.model = state.model.module
 
     # save RNG state as well and the function to restore it
-    get_rng_methods = torch.cuda.get_rng_state_all, torch.get_rng_state, np.random.get_state, random.getstate
-    set_rng_methods = torch.cuda.set_rng_state_all, torch.set_rng_state, np.random.set_state, random.setstate
+    get_rng_methods = torch.cuda.get_rng_state, torch.get_rng_state, np.random.get_state, random.getstate
+    set_rng_methods = torch.cuda.set_rng_state, torch.set_rng_state, np.random.set_state, random.setstate
     state.rng_state = [method() for method in get_rng_methods]
     state.set_rng_methods = set_rng_methods
 
@@ -552,8 +554,8 @@ def save_state(state: TrainState, fn: str):
 
 def load_state(fn):
     """Loads training state from fn"""
-    if util.get_global_rank() != 0:
-        return
+    fn_basename, fn_ext = os.path.splitext(fn)
+    fn = f"{fn_basename}_worker{util.get_global_rank()}"
 
     state = torch.load(fn)
 
@@ -621,9 +623,12 @@ def main_loop():
                                          ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=g.cutoffs,
                                          same_length=args.same_length, attn_type=args.attn_type,
                                          clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
-        g.state.model.apply(weights_init)
-        g.state.model.word_emb.apply(
-            weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
+        if args.checkpoint:
+            util.restore_from_checkpoint(g.state.model, checkpoint_fn=args.checkpoint)
+        else:
+            g.state.model.apply(weights_init)
+            g.state.model.word_emb.apply(
+                weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
         g.state.model.to(g.device)
         optimizer_setup(g.state)
 
