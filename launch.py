@@ -119,9 +119,27 @@ one_small_machine_wiki = {
 }
 
 one_small_machine_git = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3.16xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    # 'checkpoint': '/ncluster/runs/txl.09/model-best.pt',  # us-east-1
+    # 'optim_state_dict': '/ncluster/runs/txl.09/optimizer-best.pt',
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e6,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
+one_machine_git = {
     'base_lr': 0.001 / 4,  # Divide by 2 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 6,
+    'local_batch_size': 18,
     'machines': 1,
     'large': True,
     # 'checkpoint': '/ncluster/runs/txl.09/model-best.pt',  # us-east-1
