@@ -699,7 +699,7 @@ def main_loop():
                 #     assert torch.all(torch.eq(data[i], target[i - 1]))
                 #     break
 
-                print(g.state.token_count, data)
+                # print(g.state.token_count, data)
                 batch_total = torch.tensor(data.shape[1]).to(g.device)
                 if args.local:  # TODO(y): factor out (need way to see if dist was inited)
                     batch_total = batch_total.sum()
