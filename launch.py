@@ -136,6 +136,24 @@ one_small_machine_git = {
     }
 }
 
+
+one_small_machine_git_checkpoint = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3.16xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
 one_machine_git = {
     'base_lr': 0.001 / 4,  # Divide by 2 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
