@@ -175,6 +175,7 @@ class LMMultiFileIterator:
         for file_num in range(self.file_offset, len(self.paths)):
             self.file_offset = file_num
             path = self.paths[file_num]
+            g.logger.info(f"training on file {path}...")
 
             sents: torch.LongTensor = self.vocab.encode_file(path, add_double_eos=True)
             if self.shuffle:

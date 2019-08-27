@@ -298,7 +298,13 @@ def log_tb(tag, val):
 
 
 def logging_setup():
+    if util.get_global_rank() == 0:
+        wandb.init(project="Transformer-XL source code", name=g.args.run_name, sync_tensorboard=True)
+
     g.logger = FileLogger(g.args.logdir, global_rank=util.get_global_rank(), local_rank=g.args.local_rank)
+    if util.get_global_rank() == 0:
+        wandb.save(os.path.join(g.args.logdir, '*'))
+
     g.logger.info(f"Torch version: {torch.__version__}")
     g.logger.info('=' * 100)
     for k, v in g.args.__dict__.items():
@@ -310,8 +316,6 @@ def logging_setup():
 
     if util.get_global_rank() == 0:
         g.event_writer = SummaryWriter(g.args.logdir)
-        if not g.args.test:
-            wandb.init(project="Transformer-XL source code", name=g.args.run_name, sync_tensorboard=True)
     else:
         g.event_writer = util.NoOp()  # TB doesn't support multiple processes writing events
 
@@ -513,7 +517,7 @@ class TrainState(util.FrozenClass):
 def save_state(state: TrainState, fn: str):
     """Saves training state"""
     fn_basename, fn_ext = os.path.splitext(fn)
-    fn = f"{fn_basename}_worker{util.get_global_rank()}"
+    fn = f"{fn_basename}_worker{util.get_global_rank()}{fn_ext}"
 
     # remove excluded args from state
     state_args = state.args
@@ -555,7 +559,7 @@ def save_state(state: TrainState, fn: str):
 def load_state(fn):
     """Loads training state from fn"""
     fn_basename, fn_ext = os.path.splitext(fn)
-    fn = f"{fn_basename}_worker{util.get_global_rank()}"
+    fn = f"{fn_basename}_worker{util.get_global_rank()}{fn_ext}"
 
     state = torch.load(fn)
 
