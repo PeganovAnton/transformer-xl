@@ -75,6 +75,17 @@ def dist_sum_tensor(tensor):
     return rt
 
 
+def dist_mean(tensor):
+    is_scalar = False
+    if not isinstance(tensor, torch.Tensor):
+        tensor = torch.tensor(tensor, device="cuda")
+        is_scalar = True
+    mean = dist_sum_tensor(tensor) / get_world_size()
+    if is_scalar:
+        return mean.item()
+    return mean
+
+
 # no_op method/object that accept every signature
 class NoOp:
     def __getattr__(self, *_args):

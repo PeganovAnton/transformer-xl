@@ -775,6 +775,7 @@ def main_loop():
 
                     # compute average loss over last logging interval
                     cur_loss = accumulated_loss / elapsed_steps
+                    cur_loss = util.dist_mean(cur_loss)
                     log_str = f'| epoch {epoch:3d} step {g.state.train_step:>8d} | {batch:>6d} batches | lr {optimizer.param_groups[0]["lr"]:.3g} ' \
                         f'| ms/batch {elapsed_time * 1000 / elapsed_steps:5.2f} | loss {cur_loss:5.2f}'
                     if args.dataset in ['enwik8', 'text8']:
