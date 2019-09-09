@@ -345,7 +345,7 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
     if split == 'val' and (not state.best_val_loss or mean_loss < state.best_val_loss):
         g.logger.info('Saving checkpoint for new best loss')
         util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
-        save_state(g.state, os.path.join(args.logdir, "state-best.pt"))
+        save_state(g.state, args.logdir)
         state.best_val_loss = mean_loss
 
 
@@ -405,10 +405,9 @@ class TrainState(util.FrozenClass):
         self._freeze()
 
 
-def save_state(state: TrainState, fn: str):
+def save_state(state: TrainState, folder_path: str):
     """Saves training state"""
-    fn_basename, fn_ext = os.path.splitext(fn)
-    fn = f"{fn_basename}_worker{util.get_global_rank()}{fn_ext}"
+    model_fn = os.path.join(folder_path, f"best-state_worker{util.get_global_rank()}.pt")
 
     # remove excluded args from state
     state_args = state.args
@@ -438,7 +437,7 @@ def save_state(state: TrainState, fn: str):
     # save tr iterator using dill
     state_tr_iter = state.tr_iter
 
-    torch.save(state, fn)
+    torch.save(state, model_fn)
     dill.dump(state_tr_iter, open('/tmp/dill', 'wb'))
 
     # Restore model/optimizer to original versions
@@ -447,12 +446,11 @@ def save_state(state: TrainState, fn: str):
     state.args = state_args
 
 
-def load_state(fn):
+def load_state(folder_path):
     """Loads training state from fn"""
-    fn_basename, fn_ext = os.path.splitext(fn)
-    fn = f"{fn_basename}_worker{util.get_global_rank()}{fn_ext}"
+    model_fn = os.path.join(folder_path, f"best-state_worker{util.get_global_rank()}.pt")
 
-    state = torch.load(fn)
+    state = torch.load(model_fn)
 
     # check that args are not in conflict
     current_args = vars(g.args)
@@ -473,7 +471,7 @@ def load_state(fn):
                 restored_args[arg] = current_args[arg]
         current_val = current_args.get(arg, 'undefined')
         restored_val = restored_args.get(arg, 'undefined')
-        assert current_val == restored_val, f"Argument {arg} overridden, restoring {arg}={restored_val} from {fn} but current " \
+        assert current_val == restored_val, f"Argument {arg} overridden, restoring {arg}={restored_val} from {folder_path} but current " \
             f"value is {arg}={current_val}"
     pass
 
