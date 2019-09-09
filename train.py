@@ -477,10 +477,13 @@ def load_state(folder_path):
 
     optimizer_setup(state)
     state.optimizer.load_state_dict(state.optimizer_state_dict)
+    state.optimizer_state_dict = None
 
     for method, rng_state in zip(state.set_rng_methods, state.rng_state):
         method(rng_state)
         pass
+    state.rng_state = None
+    state.set_rng_methods = None
 
     # state.tr_iter = dill.load(open('/tmp/dill', 'rb'))
 
