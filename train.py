@@ -319,7 +319,18 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
         model_to_reset.reset_length(
             args.eval_tgt_len, args.ext_len, args.mem_len + args.tgt_len - args.eval_tgt_len)
 
-    total_loss, total_len = evaluate(model, eval_iter, split, args.max_eval_steps)
+    # Calculate metrics
+    ret = evaluate(model, eval_iter, split, args.max_eval_steps)
+    total_loss, accuracy_top1, accuracy_top5, MRR, total_len = \
+        ret["total_loss"], ret["accuracy_top1"], ret["accuracy_top5"], ret["MRR_top5"], ret["total_len"]
+
+    if util.get_global_rank() == 0:
+        # Get samples
+        _, unconditional_sample = sample_text(model, length=1000)
+        context, conditional_sample = sample_text(model, length=1000, conditional_files=["train.py"])
+        # Log it
+        log_sample("", unconditional_sample, "uncond")
+        log_sample(context, conditional_sample, "cond")
 
     # Switch back to the training mode
     model_to_reset.reset_length(args.tgt_len, args.ext_len, args.mem_len)
@@ -327,19 +338,30 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
 
     # Log all the things.
     mean_loss = total_loss / total_len
-    mean_loss = util.dist_sum_tensor(torch.tensor(mean_loss, device='cuda')).item() / util.get_world_size()
+    mean_loss = util.dist_mean(mean_loss)
+    mean_accuracy_top1 = util.dist_mean(accuracy_top1)
+    mean_accuracy_top5 = util.dist_mean(accuracy_top5)
+    mean_MRR = util.dist_mean(MRR)
     g.logger.info('-' * 100)
-    log_str = (f'| Eval {g.state.train_step // args.eval_interval:3d} at step {g.state.train_step:>8d} | ' +
-               f'time: {time.time() - eval_start_time:5.2f}s ' +
+    log_str = (f'| Eval {g.state.train_step // args.eval_interval:3d} at step {g.state.train_step:>8d} | '
+               f'time: {time.time() - eval_start_time:5.2f}s '
                f'| {split} loss {mean_loss:5.2f}')
+    log_tb(f'learning/{split}_loss', mean_loss)
     if args.dataset in ['enwik8', 'text8']:
         log_str += f' | bpc {mean_loss / math.log(2):9.5f}'
+        log_tb(f'learning/{split}_bpc', mean_loss / math.log(2))
+    elif args.dataset == 'git':
+        log_str += f' | accuracy@1 {mean_accuracy_top1:.2f} ' \
+                   f'| accuracy@5 {mean_accuracy_top5:.2f} ' \
+                   f'| MRR@5 {mean_MRR:.2f}'
+        log_tb(f'learning/{split}_acc@1', mean_accuracy_top1)
+        log_tb(f'learning/{split}_acc@5', mean_accuracy_top5)
+        log_tb(f'learning/{split}_MRR@5', mean_MRR)
     else:
         log_str += f' | {split} ppl {math.exp(mean_loss):9.3f}'
+        log_tb(f'learning/{split}_ppl', math.exp(mean_loss))
     g.logger.info(log_str)
     g.logger.info('-' * 100)
-    log_tb(f'learning/{split}_loss', mean_loss)
-    log_tb(f'learning/{split}_ppl', math.exp(mean_loss))
 
     # Update checkpoint if validation loss improved.
     if split == 'val' and (not state.best_val_loss or mean_loss < state.best_val_loss):

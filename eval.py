@@ -14,12 +14,17 @@ python eval.py --data=data/wikiextracted/ --dataset=wiki --batch_size=8 --tgt_le
 import argparse
 import math
 import os
+from typing import List, Tuple
 
 import torch
 import tqdm
 
+import globals as g  # global state current run, shared between modules
 from data_utils import get_lm_corpus
+from generate import hidden_to_softmax, generate_text, prepare_git_context
+from util import unwrap_model
 from utils.exp_utils import get_logger
+
 
 def main():
     parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
@@ -89,35 +94,88 @@ def main():
         if args.split in (split, 'all'):
             it = corpus.get_iterator(split, args.batch_size, args.tgt_len,
                 device=device, ext_len=args.ext_len)
-            logging(format_log(args, *evaluate(model, it, split), split))
+            logging(format_log(args, evaluate(model, it, split), split))
 
 
 def evaluate(model, eval_iter, label: str, max_eval_steps: int = 0):
     # Turn on evaluation mode which disables dropout.
     model.eval()
-    total_len, total_loss = 0, 0.
+    total_len, total_count = 0, 0
+    total_loss, total_top1, total_top5, MRR_total = 0., 0, 0, 0.
     with torch.no_grad():
         mems = tuple()
         bar = tqdm.tqdm(eval_iter, leave=False)
         for i, (data, target, seq_len) in enumerate(bar):
-            if max_eval_steps > 0 and i >= max_eval_steps:
+            if 0 < max_eval_steps <= i:
                 break
-            ret = model(data, target, *mems)
-            loss, mems = ret[0], ret[1:]
+
+            ret = model(data, target, *mems, return_hidden=True)
+            pred_hid, loss, mems = ret[0].half(), ret[1], ret[2:]
+            softmax = hidden_to_softmax(unwrap_model(model), pred_hid)
+
+            # Loss calculation
             loss = loss.mean()
             total_loss += seq_len * loss.item()
+
+            # Accuracy calculation
+            _, pred_top = torch.topk(softmax, 5)
+            true_pos = pred_top == target.unsqueeze(-1).expand_as(pred_top)
+            true_top1 = true_pos[:, :, 0].sum()
+            true_top5 = true_pos[:, :, :5].sum()
+            total_top1 += true_top1
+            total_top5 += true_top5
+
+            # MRR calculation
+            MRR_total += float(
+                (
+                        true_pos.double() / (
+                            torch.arange(end=true_pos.size(-1), dtype=torch.double, device=true_pos.device) + 1)
+                ).sum()
+            )
+
             total_len += seq_len
-            bar.set_description(f'{label} loss: {total_loss / total_len:.2f}')
-    return total_loss, total_len
+            total_count += seq_len * target.size(1)
+            MRR_top5 = MRR_total / total_count
+            accuracy_top1 = float(total_top1) / total_count
+            accuracy_top5 = float(total_top5) / total_count
+            bar.set_description(f'{label} '
+                                f'| loss: {total_loss / total_len:.2f} '
+                                f'| accuracy@1: {accuracy_top1:.2f} '
+                                f'| accuracy@5: {accuracy_top5:.2f} '
+                                f'| MRR@5: {MRR_top5:.2f} ')
+        metrics = {
+            "total_loss": total_loss,
+            "accuracy_top1": accuracy_top1,
+            "accuracy_top5": accuracy_top5,
+            "MRR_top5": MRR_top5,
+            "total_len": total_len,
+        }
+    return metrics
 
 
-def format_log(args, loss, total, split):
-    if args.dataset in ['enwik8', 'text8']:
-        special = f'bpc {loss / math.log(2):9.5f}'
+def sample_text(model, length: int, conditional_files: List[str] = None, temperature: float = 1.0) -> Tuple[str, str]:
+    if not conditional_files:
+        context = prepare_git_context()
     else:
-        special = f'ppl {math.exp(loss/total):9.3f}'
-    return f'| {split} loss\t{loss/total:5.4f} | {split}\t{special}\tloss {loss:.1f}\ttokens {total}\n'
+        context = prepare_git_context(conditional_files[-1],
+                                      conditional_files[:-1] if len(conditional_files) > 1 else None)
+    text = generate_text(unwrap_model(model), context, length, tokenizer=g.corpus.vocab.tokenizer,
+                         temperature=temperature)[0]
+    return context, text
 
+
+def format_log(args, metrics, split):
+    if args.dataset in ['enwik8', 'text8']:
+        special = f'bpc {metrics["total_loss"] / math.log(2):9.5f}'
+    elif args.dataset == "git":
+        special = f'accuracy@1 {metrics["accuracy_top1"]} ' \
+                  f'| accuracy@5 {metrics["accuracy_top1"]} ' \
+                  f'| MRR@5 {metrics["MRR_top5"]}'
+    else:
+        special = f'ppl {math.exp(metrics["total_loss"]/metrics["total_len"]):9.3f}'
+
+    return f'| {split} loss\t{metrics["total_loss"]/metrics["total_len"]:5.4f} | {split}\t{special}\t' \
+           f'loss {metrics["total_loss"]:.1f}\ttokens {metrics["total_len"]}\n'
 
 
 if __name__ == '__main__':
