@@ -749,7 +749,7 @@ class MemTransformerLM(nn.Module):
         #print("new_mems: ", new_mems[0].dtype)
         return core_out, new_mems
 
-    def forward(self, data, target, *mems):
+    def forward(self, data, target, *mems, return_hidden=False):
         # nn.DataParallel does not allow size(0) tensors to be broadcasted.
         # So, have to initialize size(0) mems inside the model forward.
         # Moreover, have to return new_mems to allow nn.DataParallel to piece
@@ -769,10 +769,12 @@ class MemTransformerLM(nn.Module):
             loss = self.crit(pred_hid.view(-1, pred_hid.size(-1)), target.view(-1))
             loss = loss.view(tgt_len, -1)
 
-        if new_mems is None:
-            return [loss]
-        else:
-            return [loss] + new_mems
+        ret = [loss]
+        if new_mems is not None:
+            ret += new_mems
+        if return_hidden:
+            ret = [pred_hid] + ret
+        return ret
 
 if __name__ == '__main__':
     import argparse
