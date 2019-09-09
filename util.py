@@ -86,6 +86,17 @@ def dist_mean(tensor):
     return mean
 
 
+def unwrap_model(model):
+    from mem_transformer import MemTransformerLM
+    i = 0
+    while not isinstance(model, MemTransformerLM):
+        model = model.module
+        i += 1
+        if i > 2:
+            assert False, "Are here more than 2 wraps?"
+    return model
+
+
 # no_op method/object that accept every signature
 class NoOp:
     def __getattr__(self, *_args):

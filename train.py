@@ -309,13 +309,7 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
     optimizer = g.state.optimizer
     eval_start_time = time.time()
 
-    # Have to unwrap DDP & FP16, if using.
-    def unwrap(module):
-        if isinstance(module, MemTransformerLM):
-            return module
-        return unwrap(module.module)
-
-    model_to_reset = unwrap(model)
+    model_to_reset = util.unwrap_model(model)
     # If the model does not use memory at all, make the ext_len longer.
     # Otherwise, make the mem_len longer and keep the ext_len the same.
     if g.args.mem_len == 0:
