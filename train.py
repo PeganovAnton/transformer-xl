@@ -327,7 +327,7 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
     if util.get_global_rank() == 0:
         # Get samples
         _, unconditional_sample = sample_text(model, length=1000)
-        context, conditional_sample = sample_text(model, length=1000, conditional_files=["train.py"])
+        context, conditional_sample = sample_text(model, length=1000, conditional_files=["test/data/git/train.py"])
         # Log it
         log_sample("", unconditional_sample, "uncond")
         log_sample(context, conditional_sample, "cond")
