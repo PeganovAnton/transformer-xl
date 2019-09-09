@@ -5,6 +5,7 @@ Based on https://github.com/huggingface/pytorch-pretrained-BERT/blob/master/exam
 """
 import argparse
 import os
+from typing import List
 
 import numpy as np
 import torch
@@ -13,25 +14,34 @@ import tqdm
 
 from pytorch_pretrained_bert import GPT2Tokenizer
 
+from mem_transformer import MemTransformerLM
+from util import unwrap_model
+from utils.vocabulary import Vocab
+
+
 def main():
     parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
     parser.add_argument('--work_dir', type=str, required=True,
                         help='path to the work_dir')
-    parser.add_argument('--cur_file', type=str, default='',
-                        help='Conditional generation context')
-    parser.add_argument('--context_files', type=str, default=None, nargs='+',
-                        help='Rest project files')
+    parser.add_argument('--dataset', type=str, required=True,
+                        help='The dataset on which the model was trained')
     parser.add_argument('--top_k', type=int, default=0,
                         help='Limit sampling to top K probabilities. If 0, use all.')
     parser.add_argument('--top_p', type=float, default=0,
                         help='Limit sampling to p nucleus sampling. If 0, use all.')
     parser.add_argument('--length', type=int, default=200,
                         help='what sequence length to generate')
-    parser.add_argument('--max_context', type=int, default=384,
-                        help='Maximum context length the model uses during generation')
-    parser.add_argument('--batch_size', type=int, default=10,
-                        help='what sequence length to generate')
+    parser.add_argument('--batch_size', type=int, default=10)
+    parser.add_argument('--batch_len', type=int, default=384)
     parser.add_argument("--temperature", type=float, default=1.0)
+    # Only for wiki dataset
+    parser.add_argument('--context', type=str, default='',
+                        help='Conditional generation context')
+    # Only for git dataset
+    parser.add_argument('--cur_file', type=str, default=None,
+                        help='Only for git dataset. Conditional generation context')
+    parser.add_argument('--context_files', type=str, default=None, nargs='+',
+                        help='Only for git dataset. Rest project files')
 
 
     args = parser.parse_args()
@@ -40,45 +50,84 @@ def main():
     # Load the best saved model.
     with open(os.path.join(args.work_dir, 'model-best.pt'), 'rb') as f:
         model = torch.load(f, map_location='cuda' if torch.cuda.is_available() else 'cpu')
-    
+    model = unwrap_model(model)
+
     if not torch.cuda.is_available():
         model = model.float()
-
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-    # NL = tokenizer.encode('\n')
-    PROJECT_SYMBOL = '\n龖龖龖\n'
-    FILE_SYMBOL = "\n!龖!\n"
-
-    context = FILE_SYMBOL.join([PROJECT_SYMBOL] +
-                               [f"<<!<<{file}>>!>>\n{open(file, 'rt', encoding='utf-8', errors='ignore').read()}"
-                                for file in args.context_files + [args.cur_file]])
-    context = tokenizer.encode(context)
-
     model = model.to(device)
     model.eval()
 
-    ## Init
-    data = torch.tensor(context).to(device)
-    # Turn into a batch.
-    data.unsqueeze_(1)
-    data = data.repeat_interleave(args.batch_size, dim=1)
+    if args.dataset == "wiki":
+        context = prepare_wiki_context(args.context)
+    elif args.dataset == "git":
+        context = prepare_git_context(args.cur_file, args.context_files)
+    else:
+        assert False, f"function for context preparation not implemented for dataset {args.dataset}"
 
-    if not hasattr(model, 'init_mems'):
-        model = model.module
-    mems = model.init_mems()
+    generated_text = generate_text(model, context, args.length, args.batch_size,
+                                   args.temperature, args.top_k, args.top_p, args.batch_len)
 
-    for i in tqdm.trange(args.length):
-        ## Grab a sample from the last frame, append to result list, append to `data`
-        pred_hid, mems = predict(model, data[-args.max_context:] if i == 0 else data[-1:], mems)
-        softmax = hidden_to_softmax(model, pred_hid[-1], top_k=args.top_k, temperature=args.temperature, top_p=args.top_p)
-
-        new_sample = torch.multinomial(softmax, num_samples=1).unsqueeze(-1).squeeze(2)
-        data = torch.cat((data, new_sample.t()), dim=0)
-
-    for i in range(data.size(1)):
+    for i in range(len(generated_text)):
         print('=' * 40, 'sample', i + 1, '=' * 40)
-        # Chop off the newlines before printing
-        print(tokenizer.decode(data[len(context):, i].tolist()))
+        print(generated_text[i])
+
+
+def prepare_git_context(context_file: str = None, project_files: List[str] = None) -> str:
+    PROJECT_SYMBOL = "\n龖龖龖\n"
+    FILE_SYMBOL = "\n!龖!\n"
+    if not context_file:
+        context_file = []
+    else:
+        context_file = [context_file]
+    if not project_files:
+        project_files = []
+    context = FILE_SYMBOL.join([PROJECT_SYMBOL] +
+                               [f"<<!<<{file}>>!>>\n{open(file, 'rt', encoding='utf-8', errors='ignore').read()}"
+                                for file in project_files + context_file])
+    return context
+
+
+def prepare_wiki_context(context: str) -> str:
+    NL = "\n" * 4
+    return NL + context
+
+
+def generate_text(model: MemTransformerLM, context: str, length: int,
+                  num_examples: int = 1, temperature: float = 1.0, top_k: int = 0, top_p: float = 0.,
+                  batch_len: int = 384, tokenizer=None) -> List[str]:
+    model.eval()
+    if not tokenizer:
+        tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    context = tokenizer.encode(context)
+
+    with torch.no_grad():
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        data = torch.tensor(context).to(device)
+        # Turn into a batch.
+        data = data.unsqueeze(1).repeat_interleave(num_examples, dim=1)
+
+        # Init mems with context, except for the last token
+        context_batches = torch.split(data[:-1], batch_len, dim=0)
+        mems = model.init_mems()
+        print("Prepare context for text generating...")
+        for batch in tqdm.tqdm(context_batches):
+            _, mems = predict(model, batch, mems)
+
+        # Generate text
+        print("Generate text...")
+        for _ in tqdm.trange(length):
+            # Grab a sample from the last frame, append to result list, append to `data`
+            pred_hid, mems = predict(model, data[-1:], mems)
+            softmax = hidden_to_softmax(model, pred_hid.squeeze(0), top_k=top_k, temperature=temperature, top_p=top_p)
+            new_sample = torch.multinomial(softmax, num_samples=1).unsqueeze(-1).squeeze(2)
+            data = torch.cat((data, new_sample.t()), dim=0)
+
+    results = []
+    for i in range(data.size(1)):
+        results.append(tokenizer.decode(data[len(context):, i].tolist()))
+
+    return results
+
 
 def predict(model, data, mems):
     tgt_len = data.size(0)
@@ -87,7 +136,8 @@ def predict(model, data, mems):
     pred_hid = hidden[-tgt_len:]
     return pred_hid, new_mems
 
-def hidden_to_softmax(model, hidden, temperature=1, top_k=0, top_p=0):
+
+def hidden_to_softmax(model, hidden, temperature=1., top_k=0, top_p=0.):
     """Turn a hidden projection into log softmax.
 
     Adapted from utils/proj_adaptive_softmax.py
@@ -133,6 +183,7 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')
             dim=-1, index=sorted_indices, src=sorted_indices_to_remove )
         logits[indices_to_remove] = filter_value
     return logits
+
 
 if __name__ == '__main__':
     main()
