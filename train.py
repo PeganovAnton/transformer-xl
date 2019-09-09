@@ -9,26 +9,24 @@ import os
 import random
 import sys
 import time
-from collections import OrderedDict
 from typing import Optional, List, Dict
 
 import dill as dill
 import numpy as np
-import pytest
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
 import wandb
 from pytorch_lamb import Lamb, log_lamb_rs
-from tensorboardX import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel
 
 import globals as g  # global state current run, shared between modules
 import util
 from data_utils import get_lm_corpus, LMOrderedIterator
-from eval import evaluate
+from eval import evaluate, sample_text
 from fp16_opt import FP16_Module, FP16_Optimizer
+from log import log_tb, logging_setup, log_sample, timeit
 from lr_finder import LRFinder
 from mem_transformer import MemTransformerLM
 
@@ -217,107 +215,6 @@ def parse_args(cmd_args=sys.argv[1:]):
             g.cutoffs = [60000, 100000, 640000]
             g.tie_projs += [False] * len(g.cutoffs)
     return args
-
-
-class FileLogger:
-    def __init__(self, output_dir: str, global_rank: int, local_rank: int):
-        self.output_dir = output_dir
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir, exist_ok=True)
-        self.logger = FileLogger.get_logger(output_dir, global_rank=global_rank, local_rank=local_rank)
-
-    def exception(self, *args_, **kwargs):
-        return self.logger.exception(*args_, **kwargs)
-
-    @staticmethod
-    def get_logger(output_dir: str, global_rank: int, local_rank: int):
-        logger_ = logging.getLogger('txl training')
-        logger_.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(message)s')
-
-        vlog = logging.FileHandler(output_dir + f'/info-{global_rank}.log')
-        vlog.setLevel(logging.INFO)
-        vlog.setFormatter(formatter)
-        logger_.addHandler(vlog)
-
-        eventlog = logging.FileHandler(output_dir + f'/warn-{global_rank}.log')
-        eventlog.setLevel(logging.WARN)
-        eventlog.setFormatter(formatter)
-        logger_.addHandler(eventlog)
-
-        time_formatter = logging.Formatter('%(asctime)s - %(filename)s:%(lineno)d - %(message)s')
-        debuglog = logging.FileHandler(output_dir + f'/debug-{global_rank}.log')
-        debuglog.setLevel(logging.DEBUG)
-        debuglog.setFormatter(time_formatter)
-        logger_.addHandler(debuglog)
-
-        console = logging.StreamHandler()
-        console.setFormatter(formatter)
-        console.setLevel(logging.DEBUG if local_rank == 0 else logging.WARN)
-        logger_.addHandler(console)
-        return logger_
-
-    def debug(self, *args_):
-        self.logger.debug(*args_)
-
-    def warn(self, *args_):
-        self.logger.warning(*args_)
-
-    def info(self, *args_):
-        self.logger.info(*args_)
-
-
-class timeit:
-    """Decorator to measure length of time spent in the block in millis and log
-  it to TensorBoard."""
-
-    def __init__(self, tag="", noop=False):
-        self.tag = tag
-        self.noop = noop
-
-    def __enter__(self):
-        if self.noop:
-            return self
-        self.start = time.perf_counter()
-        return self
-
-    def __exit__(self, *_args):
-        if self.noop:
-            return
-        self.end = time.perf_counter()
-        interval_ms = 1000 * (self.end - self.start)
-        g.timeit_dict.setdefault(self.tag, []).append(interval_ms)
-        newtag = 'times/' + self.tag
-        log_tb(newtag, interval_ms)
-
-
-def log_tb(tag, val):
-    """Log value to tensorboard (relies on g.token_count rather than step count to give comparable graphs across
-    batch sizes)"""
-    g.event_writer.add_scalar(tag, val, g.token_count)
-
-
-def logging_setup():
-    if util.get_global_rank() == 0:
-        wandb.init(project="Transformer-XL source code", name=g.args.run_name, sync_tensorboard=True)
-
-    g.logger = FileLogger(g.args.logdir, global_rank=util.get_global_rank(), local_rank=g.args.local_rank)
-    if util.get_global_rank() == 0:
-        wandb.save(os.path.join(g.args.logdir, '*'))
-
-    g.logger.info(f"Torch version: {torch.__version__}")
-    g.logger.info('=' * 100)
-    for k, v in g.args.__dict__.items():
-        g.logger.info(f'    - {k} : {v}')
-    g.logger.info('=' * 100)
-    g.timeit_dict = OrderedDict()
-    g.event_writer = util.NoOp()
-    g.token_count = 0
-
-    if util.get_global_rank() == 0:
-        g.event_writer = SummaryWriter(g.args.logdir)
-    else:
-        g.event_writer = util.NoOp()  # TB doesn't support multiple processes writing events
 
 
 def data_setup():
