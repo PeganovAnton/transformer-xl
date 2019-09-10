@@ -623,6 +623,7 @@ def main_loop():
                     batch_total = batch_total.sum()
                 else:
                     batch_total = util.dist_sum_tensor(batch_total)  # global batch size
+                    
 
                 total_tokens = util.toscalar(batch_total) * seq_len
                 should_log = g.state.train_step < args.verbose_log_steps or (
@@ -716,6 +717,10 @@ def main_loop():
                     if args.optim == 'lamb':
                         log_lamb_rs(optimizer, g.event_writer, g.state.token_count)
 
+                    log_tb('sizes/batch_total', batch_total)
+                    log_tb('sizes/tokens_total', total_tokens)
+                    log_tb('sizes/tokens_consumed', consumed_tokens)
+                    log_tb('sizes/linear_scaling_factor', linear_scaling_factor)
                     time_per_batch = elapsed_time / elapsed_steps
                     time_per_sample = time_per_batch / args.batch_size
                     time_per_token = time_per_sample / args.tgt_len
