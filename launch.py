@@ -449,7 +449,7 @@ def main():
         'dataset': 'wt103',
         'adaptive': True,
         'log_interval': 100,
-        'eval_interval': 500,
+        'eval_interval': 5000,
         'max_tokens': int(1.5e9),
         'logdir': job.logdir,
         'lr': lr,
