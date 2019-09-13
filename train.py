@@ -370,6 +370,8 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
         # save_state(g.state, args.logdir)  # state is large and useless, 4GB per GPU on transformer-xl
         state.best_val_loss = mean_loss
 
+    util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=str(g.token_count))
+
 
 # This function wraps creation code that needs to run both during intial setup and during checkpoint restore
 def optimizer_setup(state):
