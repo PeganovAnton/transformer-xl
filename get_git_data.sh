@@ -2,7 +2,7 @@
 
 
 if [[ ! -f 11kk.tar.gz ]]; then
-    wget https://5k-dataset.s3.amazonaws.com/11kk.tar.gz
+    curl "https://5k-dataset.s3.amazonaws.com/11kk.tar.gz" -o nul -#
 fi
 
 mkdir data/git

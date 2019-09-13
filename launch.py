@@ -432,6 +432,7 @@ def main():
             f'pip install -r requirements.txt')
     # job.run('bash get_git_data.sh')
     # job.run('bash get_git_data_85gb.sh')
+    # job.run('curl "https://github-lm.s3.amazonaws.com/github-projects_p3dn-2d_best.pt" -o nul -#')
 
     local_batch_size = config.local_batch_size
     base_lr = config.base_lr
