@@ -169,7 +169,7 @@ one_small_machine_git_checkpoint = {
         'warmup_tokens': 50e5,
         'dynamic_loss_scale': True,
         'scheduler': 'constant',
-        'data': 'data/git_85gb',
+        'data': 'data/git',
         'dataset': 'git',
     }
 }
