@@ -159,7 +159,11 @@ def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
 
 
 def dist_save_checkpoint(ddp_model, optimizer_, directory: str, suffix=''):
-    """Saves model/optimizer into {directory}/optimizer-{suffix}.py and {directory}/model-{suffix}.pt"""
+    """
+    Distributed checkpoint saver. No-op unless worker has global rank 0.
+    Saves model/optimizer into {directory}/optimizer-{suffix}.py and {directory}/model-{suffix}.pt
+
+    """
     if get_global_rank() != 0:
         return
     with open(directory + f'/model-{suffix}.pt', 'wb') as f_1:

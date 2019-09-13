@@ -1,13 +1,3 @@
-
-import os
-import sys
-
-module_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(module_path+'/..')
-sys.path.append(module_path+'/../utils')
-
-import train
-import util
 import copy
 import os
 
@@ -15,9 +5,11 @@ import pytest
 import torch
 
 import globals as g  # global state current run, shared between modules
+import train
+import util
 
-simple_args_str = "--local --data=data --batch_size=1 --verbose_log_steps=0 --n_layer=1 --d_model=10 --d_inner=2 " \
-                  "--max_tokens=4 --tgt_len=1 --scheduler=constant --log_interval=20"
+simple_args_str = "--local --data=test/data --batch_size=1 --verbose_log_steps=0 --n_layer=1 --d_model=10 --d_inner=2 " \
+                  "--max_tokens=4 --tgt_len=1 --scheduler=constant --log_interval=20 --test=1"
 simple_args = train.parse_args(simple_args_str.strip().split())
 
 
@@ -135,15 +127,15 @@ def test_checkpoint_fp16_lamb():
 
 
 def test_checkpoint_wiki_small():
-    os.system('rm data/wikiextracted/AA/wiki_00.txt.tokenized')
-    os.system('rm data/wikiextracted/AA/wiki_01.txt.tokenized')
-    os.system('rm data/wikiextracted/AA/wiki_02.txt.tokenized')
-    os.system('rm data/wikiextracted/AA/wiki_03.txt.tokenized')
-    os.system('rm data/wikiextracted/cache.pt.bpe')
+    os.system('rm test/data/wikiextracted/AA/wiki_00.txt.tokenized')
+    os.system('rm test/data/wikiextracted/AA/wiki_01.txt.tokenized')
+    os.system('rm test/data/wikiextracted/AA/wiki_02.txt.tokenized')
+    os.system('rm test/data/wikiextracted/AA/wiki_03.txt.tokenized')
+    os.system('rm test/data/wikiextracted/cache.pt.bpe')
     g.args = copy.deepcopy(simple_args)
     g.args.test = 'yes'
 
-    g.args.data = 'data/wikiextracted'
+    g.args.data = 'test/data/wikiextracted'
     g.args.dataset = 'wiki'
     g.args.dropatt = 0.1
     g.args.dropout = 0.1
@@ -179,18 +171,18 @@ def test_checkpoint_wiki_small():
 
 
 def test_checkpoint_wiki():
-    os.system('rm data/wikiextracted/AA/wiki_00.txt.tokenized')
-    os.system('rm data/wikiextracted/AA/wiki_01.txt.tokenized')
-    os.system('rm data/wikiextracted/AA/wiki_02.txt.tokenized')
-    os.system('rm data/wikiextracted/AA/wiki_03.txt.tokenized')
-    os.system('rm data/wikiextracted/cache.pt.bpe')
+    os.system('rm test/data/wikiextracted/AA/wiki_00.txt.tokenized')
+    os.system('rm test/data/wikiextracted/AA/wiki_01.txt.tokenized')
+    os.system('rm test/data/wikiextracted/AA/wiki_02.txt.tokenized')
+    os.system('rm test/data/wikiextracted/AA/wiki_03.txt.tokenized')
+    os.system('rm test/data/wikiextracted/cache.pt.bpe')
     g.args = copy.deepcopy(simple_args)
     g.args.test = 'yes'
 
     g.args.batch_size = 2
     g.args.tgt_len = 2
 
-    g.args.data = 'data/wikiextracted'
+    g.args.data = 'test/data/wikiextracted'
     g.args.dataset = 'wiki'
     g.args.dropatt = 0.1
     g.args.dropout = 0.1
@@ -228,18 +220,18 @@ def test_checkpoint_wiki():
 
 
 def test_checkpoint_wiki_multiepoch():
-    os.system('rm data/wikiextracted/AA/wiki_00.txt.tokenized')
-    os.system('rm data/wikiextracted/AA/wiki_01.txt.tokenized')
-    os.system('rm data/wikiextracted/AA/wiki_02.txt.tokenized')
-    os.system('rm data/wikiextracted/AA/wiki_03.txt.tokenized')
-    os.system('rm data/wikiextracted/cache.pt.bpe')
+    os.system('rm test/data/wikiextracted/AA/wiki_00.txt.tokenized')
+    os.system('rm test/data/wikiextracted/AA/wiki_01.txt.tokenized')
+    os.system('rm test/data/wikiextracted/AA/wiki_02.txt.tokenized')
+    os.system('rm test/data/wikiextracted/AA/wiki_03.txt.tokenized')
+    os.system('rm test/data/wikiextracted/cache.pt.bpe')
     g.args = copy.deepcopy(simple_args)
     g.args.test = 'yes'
 
     g.args.batch_size = 2
     g.args.tgt_len = 2
 
-    g.args.data = 'data/wikiextracted'
+    g.args.data = 'test/data/wikiextracted'
     g.args.dataset = 'wiki'
     g.args.dropatt = 0.1
     g.args.dropout = 0.1
@@ -277,17 +269,17 @@ def test_checkpoint_wiki_multiepoch():
 
 
 def test_checkpoint_git():
-    os.system('rm data/git/git_1.txt.tokenized')
-    os.system('rm data/git/git_2.txt.tokenized')
-    os.system('rm data/git/git_3.txt.tokenized')
-    os.system('rm data/git/git_4.txt.tokenized')
+    os.system('rm test/data/git/git_1.txt.tokenized')
+    os.system('rm test/data/git/git_2.txt.tokenized')
+    os.system('rm test/data/git/git_3.txt.tokenized')
+    os.system('rm test/data/git/git_4.txt.tokenized')
     g.args = copy.deepcopy(simple_args)
     g.args.test = 'yes'
 
     g.args.batch_size = 2
     g.args.tgt_len = 2
 
-    g.args.data = 'data/git'
+    g.args.data = 'test/data/git'
     g.args.dataset = 'git'
     g.args.dropatt = 0.1
     g.args.dropout = 0.1
@@ -325,17 +317,17 @@ def test_checkpoint_git():
 
 
 def test_checkpoint_git_multiepoch():
-    os.system('rm data/git/git_1.txt.tokenized')
-    os.system('rm data/git/git_2.txt.tokenized')
-    os.system('rm data/git/git_3.txt.tokenized')
-    os.system('rm data/git/git_4.txt.tokenized')
+    os.system('rm test/data/git/git_1.txt.tokenized')
+    os.system('rm test/data/git/git_2.txt.tokenized')
+    os.system('rm test/data/git/git_3.txt.tokenized')
+    os.system('rm test/data/git/git_4.txt.tokenized')
     g.args = copy.deepcopy(simple_args)
     g.args.test = 'yes'
 
     g.args.batch_size = 2
     g.args.tgt_len = 2
 
-    g.args.data = 'data/git'
+    g.args.data = 'test/data/git'
     g.args.dataset = 'git'
     g.args.dropatt = 0.1
     g.args.dropout = 0.1

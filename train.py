@@ -189,7 +189,7 @@ parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
                     help='how long to wait before shutting down on error')
 
 # testing flags
-parser.add_argument('--test', type=str, default='', help='run test')
+parser.add_argument('--test', type=int, default=0, help='run test, or running inside test')
 
 
 def parse_args(cmd_args=sys.argv[1:]):
@@ -427,9 +427,9 @@ class TrainState(util.FrozenClass):
         self._freeze()
 
 
-def save_state(state: TrainState, folder_path: str):
+def save_state(state: TrainState, model_chkpt_name: str):
     """Saves training state"""
-    model_fn = os.path.join(folder_path, f"best-state_worker{util.get_global_rank()}.pt")
+    model_fn = model_chkpt_name + f'-state-best-state_worker{util.get_global_rank()}.pt'
 
     # remove excluded args from state
     state_args = state.args
@@ -451,9 +451,13 @@ def save_state(state: TrainState, folder_path: str):
         state.model = state.model.module
 
     # save RNG state as well and the function to restore it
-    get_rng_methods = torch.cuda.get_rng_state, torch.get_rng_state, np.random.get_state, random.getstate
-    set_rng_methods = torch.cuda.set_rng_state, torch.set_rng_state, np.random.set_state, random.setstate
+    get_rng_methods = [torch.get_rng_state, np.random.get_state, random.getstate]
+    set_rng_methods = [torch.set_rng_state, np.random.set_state, random.setstate]
     state.rng_state = [method() for method in get_rng_methods]
+
+    if torch.cuda.is_available():
+        get_rng_methods.append(torch.cuda.get_rng_state)
+        set_rng_methods.append(torch.cuda.set_rng_state)
     state.set_rng_methods = set_rng_methods
 
     # save tr iterator using dill
@@ -468,9 +472,10 @@ def save_state(state: TrainState, folder_path: str):
     state.args = state_args
 
 
-def load_state(folder_path):
+def load_state(model_chkpt_name):
     """Loads training state from fn"""
-    model_fn = os.path.join(folder_path, f"best-state_worker{util.get_global_rank()}.pt")
+
+    model_fn = model_chkpt_name + f'-state-best-state_worker{util.get_global_rank()}.pt'
 
     state = torch.load(model_fn)
 
@@ -493,7 +498,7 @@ def load_state(folder_path):
                 restored_args[arg] = current_args[arg]
         current_val = current_args.get(arg, 'undefined')
         restored_val = restored_args.get(arg, 'undefined')
-        assert current_val == restored_val, f"Argument {arg} overridden, restoring {arg}={restored_val} from {folder_path} but current " \
+        assert current_val == restored_val, f"Argument {arg} overridden, restoring {arg}={restored_val} from {model_chkpt_name} but current " \
             f"value is {arg}={current_val}"
     pass
 
@@ -581,9 +586,8 @@ def main_loop():
                                         output_device=args.local_rank)  # , find_unused_parameters=True)
 
     if util.get_global_rank() == 0:
-        if not args.test:
+        if not args.test:   # we restore multiple models during testing son config values change, wandb doesn't allow this
             wandb.config.update(vars(args))
-            # wandb.watch(model)
 
     g.event_writer.add_text('args', str(args))  # TODO: replace with log_tb
 
