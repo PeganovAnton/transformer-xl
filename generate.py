@@ -7,16 +7,13 @@ import argparse
 import os
 from typing import List
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 import tqdm
-
 from pytorch_pretrained_bert import GPT2Tokenizer
 
 from mem_transformer import MemTransformerLM
 from util import unwrap_model
-from utils.vocabulary import Vocab
 
 
 def main():
@@ -75,15 +72,9 @@ def main():
 def prepare_git_context(context_file: str = None, project_files: List[str] = None) -> str:
     PROJECT_SYMBOL = "\n龖龖龖\n"
     FILE_SYMBOL = "\n!龖!\n"
-    if not context_file:
-        context_file = []
-    else:
-        context_file = [context_file]
-    if not project_files:
-        project_files = []
-    context = FILE_SYMBOL.join([PROJECT_SYMBOL] +
-                               [f"<<!<<{file}>>!>>\n{open(file, 'rt', encoding='utf-8', errors='ignore').read()}"
-                                for file in project_files + context_file])
+    context = FILE_SYMBOL
+    if context_file:
+        context += f"<<!<<{context_file}>>!>>\n{open(context_file, 'rt', encoding='utf-8', errors='ignore').read()}"
     return context
 
 

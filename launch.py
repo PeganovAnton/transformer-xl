@@ -50,7 +50,7 @@ args = parser.parse_args()
 
 # default environment settings, should change rarely since they affect
 # all configs
-IMAGE_NAME = 'cybertronai01_git02'
+IMAGE_NAME = 'cybertronai01_git03'
 # CONDA_ENV = 'pytorch_april_nccl237'
 CONDA_ENV = 'pytorch_p36'
 
@@ -169,7 +169,7 @@ one_small_machine_git_checkpoint = {
         'warmup_tokens': 50e5,
         'dynamic_loss_scale': True,
         'scheduler': 'constant',
-        'data': 'data/git',
+        'data': 'data/git_85gb',
         'dataset': 'git',
     }
 }
@@ -431,6 +431,7 @@ def main():
             f'pip install -U protobuf && '+
             f'pip install -r requirements.txt')
     # job.run('bash get_git_data.sh')
+    # job.run('bash get_git_data_85gb.sh')
 
     local_batch_size = config.local_batch_size
     base_lr = config.base_lr
