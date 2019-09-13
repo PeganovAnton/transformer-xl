@@ -2,7 +2,7 @@
 
 
 if [[ ! -f dataset-v2-py3.tar.gz ]]; then
-    curl "https://5k-dataset.s3.amazonaws.com/dataset-v2-py3.tar.gz" -o nul -#
+    curl "https://5k-dataset.s3.amazonaws.com/dataset-v2-py3.tar.gz" -o dataset-v2-py3.tar.gz -#
 fi
 
 mkdir -p data/git_85gb
