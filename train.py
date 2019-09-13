@@ -367,7 +367,7 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
     if split == 'val' and (not state.best_val_loss or mean_loss < state.best_val_loss):
         g.logger.info('Saving checkpoint for new best loss')
         util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
-        save_state(g.state, args.logdir)
+        # save_state(g.state, args.logdir)  # state is large and useless, 4GB per GPU on transformer-xl
         state.best_val_loss = mean_loss
 
 
@@ -770,6 +770,7 @@ if __name__ == '__main__':
         data_setup()
         main_loop()
         if g.args.save_state_fn:
+            assert g.args.test, "state saving was only tested in toy examples, it's huge, probably you don't want this"
             save_state(g.state, g.args.save_state_fn)
 
         # Eval one more time.
