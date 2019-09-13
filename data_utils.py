@@ -173,6 +173,7 @@ class LMMultiFileIterator:
             assert False, "todo(y): check quality, spot check shows that >90% of data is left in original pos"
 
         for file_num in range(self.file_offset, len(self.paths)):
+            self.stream_offsets = [0] * self.bsz
             self.file_offset = file_num
             path = self.paths[file_num]
             g.logger.info(f"training on file {path}...")
