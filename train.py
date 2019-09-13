@@ -623,8 +623,9 @@ def main_loop():
                     batch_total = batch_total.sum()
                 else:
                     batch_total = util.dist_sum_tensor(batch_total)  # global batch size
+                batch_total = util.toscalar(batch_total)
 
-                total_tokens = util.toscalar(batch_total) * seq_len
+                total_tokens = batch_total * seq_len
                 should_log = g.state.train_step < args.verbose_log_steps or (
                             g.state.train_step + 1) % args.log_interval == 0
 
