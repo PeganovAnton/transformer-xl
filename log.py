@@ -30,13 +30,15 @@ def logging_setup():
 
     if g.args.log_all_workers:  # special debug mode where all processes log
         wandb.init(project=project_name, group=logdir_name,
-                   name=f'worker-{util.get_global_rank()}', dir=wandb_dir)
+                   name=f'worker-{util.get_global_rank()}', dir=wandb_dir,
+                   sync_tensorboard=True)
     else:
         # disable wandb on all non-chief workers
         if util.get_global_rank() != 0:
             print(f"Setting logging for worker {util.get_global_rank()} to dryrun mode")
             os.environ['WANDB_MODE'] = 'dryrun'
-        wandb.init(project=project_name, name=logdir_name, dir=wandb_dir)
+        wandb.init(project=project_name, name=logdir_name, dir=wandb_dir,
+                   sync_tensorboard=True)
 
     g.logger = FileLogger(g.args.logdir, global_rank=util.get_global_rank(), local_rank=g.args.local_rank)
     if util.get_global_rank() == 0:

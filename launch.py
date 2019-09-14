@@ -124,6 +124,8 @@ root_config = {
     'conda_env': 'pytorch_p36'
 }
 
+
+# log:
 basic = {
     'name': 'basic',  # determines name of machine and run in logging
     'machines': 1,
