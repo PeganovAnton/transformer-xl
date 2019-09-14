@@ -15,6 +15,6 @@ task = ncluster.make_task(args.name, instance_type='r5.large',
 
 task.run('source activate tensorflow_p36')
 logdir_root = os.path.dirname(task.logdir)
-task.run(f'tensorboard --logdir={ncluster.get_logdir_root()} --port=6006',
+task.run(f'tensorboard --logdir=/ncluster/runs --port=6006',
          non_blocking=True)
 print(f'TensorBoard at http://{task.public_ip}:6006')

@@ -127,7 +127,7 @@ root_config = {
 
 # log:
 basic = {
-    'name': 'basic',  # determines name of machine and run in logging
+    'name': 'saturdaytxl',  # determines name of machine and run in logging
     'machines': 1,
     'image_name': 'cybertronai01_git02',
 
@@ -143,7 +143,7 @@ basic = {
         TRANSFORMER_360,
         GIT_DATASET,
         {
-            'checkpoint': "https://s3.amazonaws.com/yaroslavvb2/data/git360-84-model.pt",  # 84% accuracy checkpoint
+            'checkpoint': "github-projects_p3dn-2d_best.pt",  
             'fp16': True,
             'warmup_tokens': 50e5,
             'dynamic_loss_scale': True,
