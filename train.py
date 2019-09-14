@@ -32,14 +32,61 @@ from mem_transformer import MemTransformerLM
 
 
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
+
+
 parser.add_argument('--logdir', type=str, default='/tmp/default', help="where logs and events go")
 parser.add_argument('--run_name', type=str, default='txl', help="name of run")
+
+
+parser.add_argument('--checkpoint', type=str, default='',
+                    help='checkpoint file of model, can be a URL')
+parser.add_argument('--optimizer_checkpoint', type=str, default='',
+                    help='checkpoint file of optimizer, can be a URL')
 
 parser.add_argument('--data', type=str, default='../data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--dataset', type=str, default='wt103',
                     choices=['wt103', 'lm1b', 'enwik8', 'text8', 'wt2', 'wiki', 'wt103-normal', 'git'],
                     help='dataset name')
+
+# logging flags
+parser.add_argument('--log_interval', type=int, default=200,
+                    help='logging interval in number of steps')
+parser.add_argument('--verbose_log_steps', type=int, default=60,
+                    help='do logging at every step for this many steps at the start of training')
+parser.add_argument('--eval_interval', type=int, default=4000,
+                    help='evaluation interval in number of steps')
+parser.add_argument('--log_all_workers', type=int, default=0, help='log from each worker instead of just chief')
+
+# optimization flags
+parser.add_argument('--fp16', action='store_true',
+                    help='Run in fp16 mode.')
+parser.add_argument('--warmup_tokens', type=float, default=0,
+                    help='upper epoch limit')
+parser.add_argument('--dynamic_loss_scale', action='store_true',
+                    help='Use dynamic loss scaling.  If supplied, this argument'
+                         ' supersedes --static-loss-scale.')
+parser.add_argument('--lr', type=float, default=0.00025,
+                    help='initial learning rate (0.00025|5 for adam|sgd)')
+parser.add_argument('--optim', default='adam', type=str,
+                    choices=['adam', 'sgd', 'adagrad', 'lamb'],
+                    help='optimizer to use.')
+parser.add_argument('--scheduler', default='cosine', type=str,
+                    choices=['cosine', 'inv_sqrt', 'dev_perf', 'constant', 'finder'],
+                    help='lr scheduler to use.')
+parser.add_argument('--mom', type=float, default=0.0,
+                    help='momentum for sgd')
+parser.add_argument('--wd', type=float, default=0,
+                    help='weight decay for adam|lamb)')
+parser.add_argument('--clip', type=float, default=0.25,
+                    help='gradient clipping')
+parser.add_argument('--clip_nonemb', action='store_true',
+                    help='only clip the gradient of non-embedding params')
+parser.add_argument('--static_loss_scale', type=float, default=1,
+                    help='Static loss scale, positive power of 2 values can '
+                         'improve fp16 convergence.')
+
+# architecture flags
 parser.add_argument('--n_layer', type=int, default=12,
                     help='number of total layers')
 parser.add_argument('--n_head', type=int, default=10,
@@ -68,28 +115,10 @@ parser.add_argument('--init_std', type=float, default=0.02,
                     help='parameters initialized by N(0, init_std)')
 parser.add_argument('--proj_init_std', type=float, default=0.01,
                     help='parameters initialized by N(0, init_std)')
-parser.add_argument('--optim', default='adam', type=str,
-                    choices=['adam', 'sgd', 'adagrad', 'lamb'],
-                    help='optimizer to use.')
-parser.add_argument('--lr', type=float, default=0.00025,
-                    help='initial learning rate (0.00025|5 for adam|sgd)')
-parser.add_argument('--mom', type=float, default=0.0,
-                    help='momentum for sgd')
-parser.add_argument('--wd', type=float, default=0,
-                    help='weight decay for adam|lamb)')
-parser.add_argument('--scheduler', default='cosine', type=str,
-                    choices=['cosine', 'inv_sqrt', 'dev_perf', 'constant', 'finder'],
-                    help='lr scheduler to use.')
-parser.add_argument('--warmup_tokens', type=float, default=0,
-                    help='upper epoch limit')
 parser.add_argument('--decay_rate', type=float, default=0.5,
                     help='decay factor when ReduceLROnPlateau is used')
 parser.add_argument('--lr_min', type=float, default=0.0,
                     help='minimum learning rate during annealing')
-parser.add_argument('--clip', type=float, default=0.25,
-                    help='gradient clipping')
-parser.add_argument('--clip_nonemb', action='store_true',
-                    help='only clip the gradient of non-embedding params')
 parser.add_argument('--max_tokens', type=int, default=1.8e9, help='upper epoch limit affecting LR schedule')
 parser.add_argument('--batch_size', type=int, default=60,
                     help='batch size')
@@ -111,31 +140,8 @@ parser.add_argument('--div_val', type=int, default=1,
                     help='divident value for adapative input and softmax')
 parser.add_argument('--pre_lnorm', action='store_true',
                     help='apply LayerNorm to the input instead of the output')
-parser.add_argument('--log_interval', type=int, default=200,
-                    help='logging interval in number of steps')
 parser.add_argument('--retune_interval', type=int, default=5,
                     help='how often to retune parameters')
-parser.add_argument('--verbose_log_steps', type=int, default=60,
-                    help='do logging at every step for this many steps at the start of training')
-parser.add_argument('--eval_interval', type=int, default=4000,
-                    help='evaluation interval in number of steps')
-
-parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
-                    help='whether to save checkpoint at each epoch')
-parser.add_argument('--checkpoint_at_end', type=int, default=0,
-                    help='whether to checkpoint things at the end of training')
-parser.add_argument('--checkpoint', type=str, default='',
-                    help='checkpoint file to use to restore training')
-
-parser.add_argument('--load_state_fn', type=str, default='', help='location of state file to restore')
-parser.add_argument('--save_state_fn', type=str, default='', help='location of state file to save')
-
-parser.add_argument('--optim_state_dict', type=str, default='',
-                    help='checkpoint (state_dict) of optimizer')
-parser.add_argument('--restart', action='store_true',
-                    help='restart training from the saved checkpoint')
-parser.add_argument('--restart_dir', type=str, default='',
-                    help='restart dir')
 parser.add_argument('--same_length', action='store_true',
                     help='use the same attn length for all tokens')
 parser.add_argument('--attn_type', type=int, default=0,
@@ -145,8 +151,6 @@ parser.add_argument('--clamp_len', type=int, default=-1,
                     help='use the same pos embeddings after clamp_len')
 parser.add_argument('--eta_min', type=float, default=0.0,
                     help='min learning rate for cosine scheduler')
-parser.add_argument('--gpu0_bsz', type=int, default=-1,
-                    help='batch size on gpu 0')
 parser.add_argument('--max_eval_steps', type=int, default=-1,
                     help='max eval steps')
 parser.add_argument('--sample_softmax', type=int, default=-1,
@@ -161,15 +165,7 @@ parser.add_argument('--num_gpu', type=int, default=1,
                     help="number of gpus (used to make sure # tokens is correct)")
 parser.add_argument('--bpe', action='store_true', default=False,
                     help="Use BPE instead of traditional vocabulary.")
-parser.add_argument('--fp16', action='store_true',
-                    help='Run in fp16 mode.')
 
-parser.add_argument('--static_loss_scale', type=float, default=1,
-                    help='Static loss scale, positive power of 2 values can '
-                         'improve fp16 convergence.')
-parser.add_argument('--dynamic_loss_scale', action='store_true',
-                    help='Use dynamic loss scaling.  If supplied, this argument'
-                         ' supersedes --static-loss-scale.')
 
 # distributed training flags
 parser.add_argument('--local', action='store_true', help='Run local training instead of distrbuted.')
@@ -190,6 +186,25 @@ parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
 
 # testing flags
 parser.add_argument('--test', type=int, default=0, help='run test, or running inside test')
+
+
+# deprecated flags?
+parser.add_argument('--checkpoint_each_epoch', type=int, default=0,
+                    help='whether to save checkpoint at each epoch')
+parser.add_argument('--checkpoint_at_end', type=int, default=0,
+                    help='whether to checkpoint things at the end of training')
+parser.add_argument('--gpu0_bsz', type=int, default=-1,
+                    help='batch size on gpu 0')
+
+parser.add_argument('--load_state_fn', type=str, default='', help='location of state file to restore')
+parser.add_argument('--save_state_fn', type=str, default='', help='location of state file to save')
+
+parser.add_argument('--optim_state_dict', type=str, default='',
+                    help='checkpoint (state_dict) of optimizer')
+parser.add_argument('--restart', action='store_true',
+                    help='restart training from the saved checkpoint')
+parser.add_argument('--restart_dir', type=str, default='',
+                    help='restart dir')
 
 
 def parse_args(cmd_args=sys.argv[1:]):
@@ -370,11 +385,14 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
         # save_state(g.state, args.logdir)  # state is large and useless, 4GB per GPU on transformer-xl
         state.best_val_loss = mean_loss
 
-    util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=str(g.token_count))
+    # also save every 6 hours regardless
+    if g.last_save_timestamp is None or g.last_save_timestamp - time.time() > 6*3600:
+        util.dist_save_checkpoint(model, optimizer, args.logdir, suffix=str(g.token_count))
+        g.last_save_timestamp = time.time()
 
 
-# This function wraps creation code that needs to run both during intial setup and during checkpoint restore
-def optimizer_setup(state):
+def optimizer_setup(state, optimizer_checkpoint=None):
+    # This function wraps creation code that needs to run both during intial setup and during checkpoint restore
     model = state.model
     if state.args.optim.lower() == 'sgd':
         optimizer = optim.SGD(g.state.model.parameters(), lr=state.args.lr, momentum=state.args.mom)
@@ -384,6 +402,16 @@ def optimizer_setup(state):
         assert state.args.optim.lower() == 'adam'
         optimizer = optim.Adam(model.parameters(), lr=state.args.lr, weight_decay=state.args.wd)
     state.optimizer = optimizer
+
+    if optimizer_checkpoint:
+        optimizer_checkpoint = util.download_if_needed(optimizer_checkpoint)
+
+        print(f"Loading optimizer from {optimizer_checkpoint}")
+        optimizer_state_dict = torch.load(optimizer_checkpoint)
+        # another layer of indirection added for FP16Optimizer
+        if 'optimizer_state_dict' in optimizer_state_dict:
+            optimizer_state_dict = optimizer_state_dict['optimizer_state_dict']
+        optimizer.load_state_dict(optimizer_state_dict)
 
     if state.args.fp16:
         state.model = FP16_Module(state.model)
@@ -548,24 +576,23 @@ def main_loop():
                                          ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=g.cutoffs,
                                          same_length=args.same_length, attn_type=args.attn_type,
                                          clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
+        # log model info
+        n_all_param = sum([p.nelement() for p in g.state.model.parameters()])
+        # log_tb('sizes/params', n_all_param)
+        n_nonemb_param = sum([p.nelement() for p in g.state.model.layers.parameters()])
+        # log_tb('sizes/non_emb_params', n_nonemb_param)
+        g.logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
+
         if args.checkpoint:
-            util.restore_from_checkpoint(g.state.model, checkpoint_fn=args.checkpoint)
+            g.logger.info("Restoring from checkpoint")
+            util.chief_restore_from_checkpoint(g.state.model, checkpoint=args.checkpoint)
+            # at this point chief worker is restored, but the rest of workers are random
         else:
             g.state.model.apply(weights_init)
-            g.state.model.word_emb.apply(
-                weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
+            g.state.model.word_emb.apply(weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
         g.state.model.to(g.device)
-        optimizer_setup(g.state)
 
     model: MemTransformerLM = g.state.model
-    optimizer = g.state.optimizer
-
-    # log model info
-    # n_all_param = sum([p.nelement() for p in model.parameters()])
-    # log_tb('sizes/params', n_all_param)
-    # n_nonemb_param = sum([p.nelement() for p in model.layers.parameters()])
-    # log_tb('sizes/non_emb_params', n_nonemb_param)
-    # g.logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
 
     # scheduler
     if not g.args.load_state_fn:
@@ -584,10 +611,18 @@ def main_loop():
         model = nn.DataParallel(model, dim=1)
     else:
         # Uncomment find_unused_parameters and upgrade to torch 1.1 for adaptive embedding.
+        g.logger.info(f"Initializing DDP {util.get_global_rank()}/{util.get_world_size()} (local rank {util.get_local_rank()})")
         model = DistributedDataParallel(model, device_ids=[args.local_rank],
                                         output_device=args.local_rank)  # , find_unused_parameters=True)
+        g.logger.info(f"Success DDP {util.get_global_rank()}/{util.get_world_size()} (local rank {util.get_local_rank()})")
 
-    if util.get_global_rank() == 0:
+    # Initialize optimizer. Must do this after DDP because optimizer makes a copy of local parameters, which are
+    # different across workers before DDP init
+    optimizer_setup(g.state, optimizer_checkpoint=None)
+    optimizer = g.state.optimizer
+    g.logger.info("Done initializing")
+
+    if util.get_global_rank() == 0 or args.log_all_workers:
         if not args.test:   # we restore multiple models during testing son config values change, wandb doesn't allow this
             wandb.config.update(vars(args))
 

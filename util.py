@@ -1,19 +1,14 @@
-import argparse
 import copy
 import datetime
 import os
 import sys
-from typing import Optional, List, Dict, Tuple, Sequence, Iterator
-
-from torch.nn import Module
+from typing import Sequence, Iterator
 
 import pytz
 import torch
 import torch.distributed as dist
-from torch import optim, nn
 
 import globals as g
-from data_utils import LMOrderedIterator
 
 
 def toscalar(t):  # use on python scalars/pytorch scalars
@@ -57,6 +52,13 @@ def get_world_size() -> int:
 def get_global_rank() -> int:
     """Returns global rank (from env), or 0 if not set"""
     return int(os.environ.get('RANK', 0))
+
+
+def get_local_rank() -> int:
+    """Returns global rank (from env), or 0 if not set"""
+    assert 'LOCAL_RANK' in os.environ, 'local rank is not set'
+    rank = int(os.environ.get('LOCAL_RANK', 0))
+    return rank
 
 
 def one_of(l):
@@ -106,7 +108,7 @@ class NoOp:
 
 
 # Deprecated method, regular restore + DDP already broadcasts args
-# def dist_restore_from_checkpoint(ddp_model, checkpoint_fn: str, force_fp16=False):
+# def chief_restore_from_checkpoint(ddp_model, checkpoint_fn: str, force_fp16=False):
 #     """Restores model wrapped in DistributedDataParallel from checkpoint file. Assumes checkpoint was saved
 #     as torch.save(ddp.module) or distributed_save_checkpoint
 #     """
@@ -127,35 +129,52 @@ class NoOp:
 #     print(f"{get_global_rank()}  -- After broadcast {pp.view(-1)[0]}")
 
 
-def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
-                            optimizer_state_dict_fn: str = '', force_fp16=False,
-                            override_lr=0):
-    """Restores model wrapped in DistributedDataParallel from checkpoint file.
-    Assumes checkpoint was saved as torch.save(ddp.module).
+def download_if_needed(url):
+    """Can be called by each member of mpi world, but only chief worker does actual download."""
+    if not url.startswith('http'):
+        return url
 
-    If optimizer_state_dict_fn is provided, also tries to restore optimizer state from state_dict saved in that file.
+    # only download from one worker per machine
+    fn = os.path.basename(url)
+    if get_global_rank() == 0:
+        print(f"Downloading {url} on worker {get_global_rank()}")
+        import urllib.request
+        response = urllib.request.urlopen(url)
+        if os.path.exists(fn):
+            print(f"URL {url} already downloaded, skpipping download")
+        else:
+            body = response.read()
+            print(f"Downloading {url} to {fn}, Read %d bytes" % (len(body),))
+            with open(fn, "wb") as f:
+                f.write(body)
+    return fn
 
-    Assumes optimizer is regular optimizer, not FP16Optimizer(optimizer), must wrap FP16 on top
-    of restored optimizer here.
-    """
 
-    saved_model = torch.load(checkpoint_fn, map_location="cpu")
+def chief_restore_from_checkpoint(model, optimizer=None, checkpoint: str = '',
+                                  optimizer_checkpoint: str = '', force_fp16=False):
+    """Restores model from checkpoint file for chief worker"""
+
+    if get_global_rank() != 0:
+        return
+
+    checkpoint = download_if_needed(checkpoint)
+    saved_model = torch.load(checkpoint, map_location="cpu")
     state_dict = saved_model.state_dict()
     if force_fp16:
         for name in state_dict:
             state_dict[name] = state_dict[name].half()
     model.load_state_dict(state_dict)
 
-    assert 'FP16_Optimizer' not in type(optimizer).__name__, f"Checkpoint restore works on PyTorch optimizers, but " \
-        f"found {type(optimizer).__name__}, found unwrap your optimizer first"
-    if optimizer_state_dict_fn:
-        optimizer_state_dict = torch.load(optimizer_state_dict_fn)
-        # another layer of indirection added for FP16Optimizer
-        if 'optimizer_state_dict' in optimizer_state_dict:
-            optimizer_state_dict = optimizer_state_dict['optimizer_state_dict']
-        if override_lr:
-            optimizer_state_dict['param_groups'][0]['lr'] = override_lr
-        optimizer.load_state_dict(optimizer_state_dict)
+    # assert 'FP16_Optimizer' not in type(optimizer).__name__, f"Checkpoint restore works on PyTorch optimizers, but " \
+    #    f"found {type(optimizer).__name__}, found unwrap your optimizer first"
+    # if optimizer_checkpoint:
+    #     optimizer_checkpoint = download_if_needed(optimizer_checkpoint)
+    #     print(f"Loading optimizer from {optimizer_checkpoint}")
+    #     optimizer_state_dict = torch.load(optimizer_checkpoint)
+    #     # another layer of indirection added for FP16Optimizer
+    #     if 'optimizer_state_dict' in optimizer_state_dict:
+    #         optimizer_state_dict = optimizer_state_dict['optimizer_state_dict']
+    #     optimizer.load_state_dict(optimizer_state_dict)
 
 
 def dist_save_checkpoint(ddp_model, optimizer_, directory: str, suffix=''):
@@ -339,4 +358,16 @@ class SaveableIteratorMaker:
 
 def saveable_iterator(data: Sequence) -> Iterator:
     return iter(SaveableIteratorMaker(data))
+
+
+def dict_to_args(dict_: dict):
+    def item_to_arg(item: tuple):
+        k, v = item
+        if v is False or v is None:
+            return ''
+        if v is True:
+            return f'--{k}'
+        return f'--{k} {v}'
+
+    return ' '.join([item_to_arg(item) for item in dict_.items()])
 

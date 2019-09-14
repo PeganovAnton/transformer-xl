@@ -22,9 +22,21 @@ def logging_setup():
         project_name = 'test-txl'
     else:
         project_name = "Transformer-XL source code"
-    if util.get_global_rank() == 0:
-        logdir_name = os.path.basename(g.args.run_name)
-        wandb.init(project=project_name, name=logdir_name, sync_tensorboard=True, dir='/tmp/wandb')
+
+    # extract run name from logdir name which has been deduped by the launcher
+    logdir_name = os.path.basename(g.args.logdir)
+    wandb_dir = '/tmp/wandb'
+    # setup logging
+
+    if g.args.log_all_workers:  # special debug mode where all processes log
+        wandb.init(project=project_name, group=logdir_name,
+                   name=f'worker-{util.get_global_rank()}', dir=wandb_dir)
+    else:
+        # disable wandb on all non-chief workers
+        if util.get_global_rank() != 0:
+            print(f"Setting logging for worker {util.get_global_rank()} to dryrun mode")
+            os.environ['WANDB_MODE'] = 'dryrun'
+        wandb.init(project=project_name, name=logdir_name, dir=wandb_dir)
 
     g.logger = FileLogger(g.args.logdir, global_rank=util.get_global_rank(), local_rank=g.args.local_rank)
     if util.get_global_rank() == 0:
