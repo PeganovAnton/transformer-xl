@@ -699,18 +699,9 @@ def main_loop():
                 # step-wise learning rate annealing
                 if hasattr(optimizer, 'overflow') and optimizer.overflow:
                     g.logger.info("skipped iteration")
-                else:
-                    # TODO(y): simplify
-                    if args.scheduler in ['cosine', 'constant', 'dev_perf']:
-                        # linear warmup stage
-                        if g.state.token_count < args.warmup_tokens:
-                            curr_lr = args.lr * g.state.token_count / args.warmup_tokens
-                            optimizer.param_groups[0]['lr'] = curr_lr
-                        elif args.scheduler == 'cosine':
-                            # Divide by 1e6 for numerical stability.
-                            g.state.scheduler.step(g.state.token_count // 1000 // 1000)
-                    else:
-                        g.state.scheduler.step(g.state.token_count)
+                if g.state.token_count < args.warmup_tokens:
+                    curr_lr = args.lr * g.state.token_count / args.warmup_tokens
+                    optimizer.param_groups[0]['lr'] = curr_lr
 
                 # TODO(y): remove total_tokens calculation
                 consumed_tokens = data.shape[0] * data.shape[1]

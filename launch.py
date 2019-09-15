@@ -127,7 +127,7 @@ root_config = {
 
 # log:
 basic = {
-    'name': 'saturdaytxl',  # determines name of machine and run in logging
+    'name': 'basic',  # determines name of machine and run in logging
     'machines': 1,
     'image_name': 'cybertronai01_git02',
 
@@ -153,6 +153,11 @@ basic = {
         }
     ]
 }
+
+# fix learning rate calculation
+lrfix2 = copy.copy(basic)
+lrfix2['name'] = 'lrfix2'
+lrfix2['worker_params'][2]['eval_interval'] = 400
 
 
 def _get_nccl_params():
