@@ -50,7 +50,7 @@ args = parser.parse_args()
 
 # default environment settings, should change rarely since they affect
 # all configs
-IMAGE_NAME = 'cybertronai01_git03'
+IMAGE_NAME = 'cybertronai01_git02'
 # CONDA_ENV = 'pytorch_april_nccl237'
 CONDA_ENV = 'pytorch_p36'
 
