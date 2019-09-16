@@ -174,6 +174,25 @@ one_small_machine_git_checkpoint = {
     }
 }
 
+# 93.6% checkpoint + p3dn instance
+one_small_machine_git_checkpoint_p3dn = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-85-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
 one_machine_git = {
     'base_lr': 0.001 / 4,  # Divide by 2 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
@@ -431,6 +450,9 @@ def main():
             f'pip install -U protobuf && '+
             f'pip install -r requirements.txt')
     # job.run('bash get_git_data.sh')
+    # job.run('bash get_git_data_85gb.sh')
+    # job.run('curl "https://github-lm.s3.amazonaws.com/github-projects_p3dn-2d_best.pt" '
+    #         '-o github-projects_p3dn-2d_best.pt')
 
     local_batch_size = config.local_batch_size
     base_lr = config.base_lr
@@ -449,7 +471,7 @@ def main():
         'dataset': 'wt103',
         'adaptive': True,
         'log_interval': 100,
-        'eval_interval': 5000,
+        'eval_interval': 500,
         'max_tokens': int(1.5e9),
         'logdir': job.logdir,
         'lr': lr,
@@ -497,6 +519,12 @@ def main():
             'adaptive': False,
         })
 
+
+    if config.checkpoint_overwrite:
+        job.run('wget '+config.checkpoint_overwrite)
+        downloaded_fn = os.path.basename(config.checkpoint_overwrite)
+        job.run(f'mv {downloaded_fn} {user_params["checkpoint"]}')
+        
     worker_params.update(user_params)
 
     if config.extra_worker_params:

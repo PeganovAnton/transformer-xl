@@ -429,6 +429,7 @@ class TrainState(util.FrozenClass):
 
 def save_state(state: TrainState, folder_path: str):
     """Saves training state"""
+    return
     model_fn = os.path.join(folder_path, f"best-state_worker{util.get_global_rank()}.pt")
 
     # remove excluded args from state
