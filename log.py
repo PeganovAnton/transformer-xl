@@ -18,8 +18,12 @@ def log_tb(tag, val):
 
 
 def logging_setup():
+    logdir_name = os.path.basename(g.args.logdir)
+    wandb_dir = '/tmp/wandb'
+    project_name = "Transformer-XL source code"
     if util.get_global_rank() == 0:
-        wandb.init(project="Transformer-XL source code", name=g.args.run_name, sync_tensorboard=True)
+        wandb.init(project=project_name, name=logdir_name, dir=wandb_dir,
+                   sync_tensorboard=True)
 
     g.logger = FileLogger(g.args.logdir, global_rank=util.get_global_rank(), local_rank=g.args.local_rank)
     if util.get_global_rank() == 0:
