@@ -572,10 +572,8 @@ def main_loop():
                     else:
                         g.state.scheduler.step(g.state.token_count)
 
-                # TODO(y): remove total_tokens calculation
                 consumed_tokens = data.shape[0] * data.shape[1]
                 tokens_per_epoch += consumed_tokens
-                # assert total_tokens == consumed_tokens
                 g.state.token_count += consumed_tokens
                 g.token_count = g.state.token_count
                 if g.state.token_count >= args.max_tokens:

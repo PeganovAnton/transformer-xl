@@ -21,13 +21,13 @@ class LMOrderedIterator:
             offset -- batch index offset
         """
         self.offset = offset  # start iterating at this token
-        self.bsz = bsz      # batch size
-        self.bptt = bptt    # context length (ie, tgt_len)
+        self.bsz = bsz  # batch size
+        self.bptt = bptt  # context length (ie, tgt_len)
         self.ext_len = ext_len if ext_len is not None else 0
 
         self.device = device
 
-        self.n_step = data.size(0) // bsz     # number of tokens per stream
+        self.n_step = data.size(0) // bsz  # number of tokens per stream
 
         # Trim off any extra elements that wouldn't cleanly fit (remainders).
         data = data.narrow(0, 0, self.n_step * bsz)
@@ -61,7 +61,7 @@ class LMOrderedIterator:
         while self.offset >= self.data.size(0) - 1:  # wrap around
             self.offset -= self.data.size(0) - 1
         for i in range(self.offset, self.data.size(0) - 1, self.bptt):
-            self.offset = i + self.bptt   # this ensures iter remembers position on unpickling
+            self.offset = i + self.bptt  # this ensures iter remembers position on unpickling
             yield self.get_batch(i)
 
 
@@ -155,7 +155,7 @@ class LMMultiFileIterator:
         self.vocab = vocab
 
         self.bsz = bsz
-        self.bptt = bptt    # same as target length
+        self.bptt = bptt  # same as target length
         self.ext_len = ext_len if ext_len is not None else 0
 
         assert self.ext_len == 0  # https://github.com/kimiyoung/transformer-xl/issues/81
@@ -165,7 +165,7 @@ class LMMultiFileIterator:
 
         # fields to store positions of iterator
         self.file_offset = 0
-        self.stream_offsets = [0]*self.bsz
+        self.stream_offsets = [0] * self.bsz
 
     def __iter__(self):
         if self.shuffle:
@@ -185,7 +185,7 @@ class LMMultiFileIterator:
 
             # one stream per batch position, advance position to account for text already consumed
             # noinspection PyTypeChecker
-            streams = list(sents.split(len(sents) // self.bsz)) # divides evenly, uneven part goes into bsz+1 pos
+            streams = list(sents.split(len(sents) // self.bsz))  # divides evenly, uneven part goes into bsz+1 pos
             for batch_pos in range(self.bsz):
                 streams[batch_pos] = streams[batch_pos][self.stream_offsets[batch_pos]:]
 
@@ -279,7 +279,7 @@ class Corpus:
 
         file_paths = natsort.natsorted(file_paths)
 
-            # the vocab will load from file when build_vocab() is called
+        # the vocab will load from file when build_vocab() is called
         self.vocab.build_vocab()
 
         if self.dataset in ['ptb', 'wt2', 'wt103']:

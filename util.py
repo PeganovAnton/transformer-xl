@@ -1,16 +1,12 @@
-import argparse
 import copy
 import datetime
 import os
 import sys
-from typing import Optional, List, Dict, Tuple, Sequence, Iterator
-
-from torch.nn import Module
+from typing import Sequence, Iterator
 
 import pytz
 import torch
 import torch.distributed as dist
-from torch import optim, nn
 
 import globals as g
 from fp16_opt import FP16_Optimizer
@@ -152,8 +148,9 @@ def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '', opti
             state_dict[name] = state_dict[name].half()
     model.load_state_dict(state_dict)
 
-    assert 'FP16_Optimizer' not in type(optimizer).__name__, f"Checkpoint restore works on PyTorch optimizers, but " \
-        f"found {type(optimizer).__name__}, you must unwrap your optimizer first"
+    assert 'FP16_Optimizer' not in type(optimizer).__name__, \
+        f"Checkpoint restore works on PyTorch optimizers, but found {type(optimizer).__name__}, " \
+        f"you must unwrap your optimizer first"
     if optimizer_state_dict_fn:
         optimizer_state_dict = torch.load(optimizer_state_dict_fn, map_location="cpu")
         # another layer of indirection added for FP16Optimizer
@@ -190,7 +187,8 @@ def cancel_shutdown():
 
 
 def current_timestamp(timezone: str = 'America/Los_Angeles') -> str:
-    """Gives timestamp formated like 2019-04-15_11-29-51. correct to local timezone (PDT) if running on AWS (which is UTC)"""
+    """Gives timestamp formated like 2019-04-15_11-29-51.
+    correct to local timezone (PDT) if running on AWS (which is UTC)"""
     pacific_tz = pytz.timezone(timezone)
     localtime = pytz.utc.localize(datetime.datetime.now(), is_dst=None).astimezone(pacific_tz)
     return localtime.strftime('%Y-%m-%d_%H-%M-%S')
@@ -325,6 +323,7 @@ class FrozenClass(object):
 
 class SaveableIteratorMaker:
     """Iterator over sequences that remembers its position on unpickling"""
+
     def __init__(self, data: Sequence, offset: int = 0):
         self.data = data
         self.offset = offset
@@ -341,4 +340,3 @@ class SaveableIteratorMaker:
 
 def saveable_iterator(data: Sequence) -> Iterator:
     return iter(SaveableIteratorMaker(data))
-

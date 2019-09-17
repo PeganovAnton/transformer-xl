@@ -2,11 +2,13 @@
 """Launch training on AWS with 8 GPUs."""
 
 import argparse
-from attrdict import AttrDefault
+import os
 import re
-import util
 
 import ncluster
+from attrdict import AttrDefault
+
+import util
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', type=str, default='txl',
@@ -101,7 +103,7 @@ one_small_machine = {
 }
 
 one_small_machine_wiki = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.001 / 4,  # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3.16xlarge',
     'local_batch_size': 6,
     'machines': 1,
@@ -117,7 +119,6 @@ one_small_machine_wiki = {
         'dataset': 'wiki',
     }
 }
-
 
 one_tiny_machine_git = {
     'base_lr': 0.001 / 4,
@@ -137,15 +138,12 @@ one_tiny_machine_git = {
     }
 }
 
-
 one_small_machine_git = {
     'base_lr': 0.001 / 4,
     'instance_type': 'p3.16xlarge',
     'local_batch_size': 6,
     'machines': 1,
     'large': True,
-    # 'checkpoint': '/ncluster/runs/txl.09/model-best.pt',  # us-east-1
-    # 'optim_state_dict': '/ncluster/runs/txl.09/optimizer-best.pt',
     'extra_worker_params': {
         'fp16': True,
         'warmup_tokens': 50e6,
@@ -155,7 +153,6 @@ one_small_machine_git = {
         'dataset': 'git',
     }
 }
-
 
 one_small_machine_git_checkpoint = {
     'base_lr': 0.001 / 4,
@@ -216,7 +213,7 @@ one_machine_git = {
 # Differences: fp16, lamb, 0 warmup, untie_r (doesn't exist in pytorch)
 # logs: ben-large-lamb-slow
 one_machine_fp16_large = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.001 / 4,  # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 1,
@@ -225,7 +222,7 @@ one_machine_fp16_large = {
 
 # fork of one_machine_fp16_large
 four_machine_fp16_large = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.001 / 4,  # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 4,
@@ -234,7 +231,7 @@ four_machine_fp16_large = {
 
 # logs: ben-eight.01
 eight_machine_fp16_large = {
-    'base_lr': 0.001 / 4, # Divide by 4 to counteract batch adjustment
+    'base_lr': 0.001 / 4,  # Divide by 4 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 16,
     'machines': 8,
@@ -302,7 +299,6 @@ one_machine_fp16_checkpoint = {
     }
 }
 
-
 # /ncluster/runs.new/yaro-two-fp16.04 (with checkpoints)
 two_machines_fp16 = {
     'base_lr': 0.000125 * 5 / 3,  # from ben-big-lr.09
@@ -322,7 +318,6 @@ two_machines = {
     'machines': 2,
 }
 
-
 # yaro-four
 four_machines = {
     'base_lr': 0.000125,  # remove ben's 5/3 tweak, and additional penalty of 2x
@@ -336,7 +331,7 @@ four_machines = {
 }
 
 eight_machines = {
-    'base_lr': 0.000125/2,  # remove ben's 5/3 tweak, and additional penalty of 2x
+    'base_lr': 0.000125 / 2,  # remove ben's 5/3 tweak, and additional penalty of 2x
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 96,
     'machines': 8,
@@ -348,6 +343,7 @@ eight_machines = {
     }
 }
 
+
 def dict_to_args(dict_: dict):
     def item_to_arg(item: tuple):
         k, v = item
@@ -356,8 +352,9 @@ def dict_to_args(dict_: dict):
         if v is True:
             return f'--{k}'
         return f'--{k} {v}'
-        
+
     return ' '.join([item_to_arg(item) for item in dict_.items()])
+
 
 # Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
 LARGE_ARGS = {
@@ -395,11 +392,12 @@ SMALL_ARGS = {
     'eval_tgt_len': 128,
 }
 
+
 def _get_nccl_params():
     params = f'NCCL_DEBUG=VERSION '
 
     params += f'NCCL_MIN_NRINGS={args.num_rings} ' \
-        f'NCCL_MAX_NRINGS={args.num_rings} '
+              f'NCCL_MAX_NRINGS={args.num_rings} '
     return params
 
 
@@ -447,8 +445,8 @@ def main():
     job.run(f'killall python || echo failed && '  # kill previous run
             f'source activate {config.conda_env} && ' +
             # protobuf https://github.com/tensorflow/models/issues/3995
-            f'pip uninstall -y protobuf && '+
-            f'pip install -U protobuf && '+
+            f'pip uninstall -y protobuf && ' +
+            f'pip install -U protobuf && ' +
             f'pip install -r requirements.txt')
     # job.run('bash get_git_data.sh')
     # job.run('bash get_git_data_85gb.sh')
@@ -479,7 +477,7 @@ def main():
         'batch_size': local_batch_size,
         'eta_min': lr / 10,
     }
-    
+
     worker_params.update(LARGE_ARGS if config.large else SMALL_ARGS)
 
     user_params = {}
@@ -520,9 +518,8 @@ def main():
             'adaptive': False,
         })
 
-
     if config.checkpoint_overwrite:
-        job.run('wget '+config.checkpoint_overwrite)
+        job.run('wget ' + config.checkpoint_overwrite)
         downloaded_fn = os.path.basename(config.checkpoint_overwrite)
         user_params["checkpoint"] = downloaded_fn
     if config.optimizer_overwrite:
@@ -547,6 +544,7 @@ def main():
         task.run(cmd, non_blocking=True)
 
     print(f"Logging to {job.logdir}")
+
 
 if __name__ == '__main__':
     main()
