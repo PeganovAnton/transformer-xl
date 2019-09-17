@@ -367,7 +367,6 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
     if split == 'val' and (not state.best_val_loss or mean_loss < state.best_val_loss):
         g.logger.info('Saving checkpoint for new best loss')
         util.dist_save_checkpoint(model, optimizer, args.logdir, suffix='best')
-        save_state(g.state, args.logdir)
         state.best_val_loss = mean_loss
 
 
@@ -383,14 +382,6 @@ def optimizer_setup(state):
         optimizer = optim.Adam(model.parameters(), lr=state.args.lr, weight_decay=state.args.wd)
     state.optimizer = optimizer
 
-    if state.args.fp16:
-        state.model = FP16_Module(state.model)
-        state.optimizer = FP16_Optimizer(state.optimizer,
-                                         static_loss_scale=state.args.static_loss_scale,
-                                         dynamic_loss_scale=state.args.dynamic_loss_scale,
-                                         dynamic_loss_args={'init_scale': 2 ** 16},
-                                         verbose=False)
-
 
 # State loading/saving. Designed for restoring after pre-emptions. Assumes all sources, args and environment are
 # the same.
@@ -402,7 +393,7 @@ def optimizer_setup(state):
 excluded_args = ['save_state_fn', 'load_state_fn']
 
 # arg values that can be saved as part of state, but current arg values will override it
-overridable_args = ['max_tokens', 'logdir', 'checkpoint']
+overridable_args = ['max_tokens', 'logdir', 'checkpoint', 'optim_state_dict']
 
 
 class TrainState(util.FrozenClass):
@@ -418,98 +409,10 @@ class TrainState(util.FrozenClass):
     token_count: int = 0  # number of tokens that have been consumed by the model training
     best_val_loss: Optional[float] = None
     partial_epoch: bool = False
-    optimizer_state_dict: Optional[Dict] = None
-    rng_state: Optional[List] = None
-    set_rng_methods: Optional[List] = None
 
     def __init__(self, args):
         self.args = args
         self._freeze()
-
-
-def save_state(state: TrainState, folder_path: str):
-    """Saves training state"""
-    model_fn = os.path.join(folder_path, f"best-state_worker{util.get_global_rank()}.pt")
-
-    # remove excluded args from state
-    state_args = state.args
-    state.args = copy.copy(state_args)
-    for arg in excluded_args:
-        del vars(state.args)[arg]
-
-    # Unwrap DDP
-    state_model = state.model
-    if state.model.__class__.__name__ == 'DistributedDataParallel':
-        state.model = state.model.module
-
-    state.optimizer_state_dict = state.optimizer.state_dict()
-    state_optimizer = state.optimizer  # don't save optimizer, since using state-dict
-    state.optimizer = None
-
-    # Unwrap FP16_Module
-    if state.args.fp16:
-        state.model = state.model.module
-
-    # save RNG state as well and the function to restore it
-    get_rng_methods = torch.cuda.get_rng_state, torch.get_rng_state, np.random.get_state, random.getstate
-    set_rng_methods = torch.cuda.set_rng_state, torch.set_rng_state, np.random.set_state, random.setstate
-    state.rng_state = [method() for method in get_rng_methods]
-    state.set_rng_methods = set_rng_methods
-
-    # save tr iterator using dill
-    state_tr_iter = state.tr_iter
-
-    torch.save(state, model_fn)
-    dill.dump(state_tr_iter, open('/tmp/dill', 'wb'))
-
-    # Restore model/optimizer to original versions
-    state.model = state_model
-    state.optimizer = state_optimizer
-    state.args = state_args
-
-
-def load_state(folder_path):
-    """Loads training state from fn"""
-    model_fn = os.path.join(folder_path, f"best-state_worker{util.get_global_rank()}.pt")
-
-    state = torch.load(model_fn)
-
-    # check that args are not in conflict
-    current_args = vars(g.args)
-    restored_args = vars(state.args)
-
-    # fill in excluded args from current args
-    for arg in excluded_args:
-        if arg in vars(g.args):
-            vars(state.args)[arg] = vars(g.args)[arg]
-
-    keys = set(current_args.keys()).union(restored_args.keys())
-    for arg in keys:
-        if arg in excluded_args:
-            continue
-        if arg in overridable_args and arg in current_args:
-            if restored_args[arg] != current_args[arg]:
-                g.logger.info(f"Overriding saved {arg}={restored_args[arg]} to {current_args[arg]}")
-                restored_args[arg] = current_args[arg]
-        current_val = current_args.get(arg, 'undefined')
-        restored_val = restored_args.get(arg, 'undefined')
-        assert current_val == restored_val, f"Argument {arg} overridden, restoring {arg}={restored_val} from {folder_path} but current " \
-            f"value is {arg}={current_val}"
-    pass
-
-    optimizer_setup(state)
-    state.optimizer.load_state_dict(state.optimizer_state_dict)
-    state.optimizer_state_dict = None
-
-    for method, rng_state in zip(state.set_rng_methods, state.rng_state):
-        method(rng_state)
-        pass
-    state.rng_state = None
-    state.set_rng_methods = None
-
-    # state.tr_iter = dill.load(open('/tmp/dill', 'rb'))
-
-    return state
 
 
 def main_loop():
@@ -527,31 +430,34 @@ def main_loop():
         assert (util.get_world_size() == dist.get_world_size())
         g.logger.info(f"Distributed: success ({args.local_rank}/{dist.get_world_size()})")
 
-    if args.load_state_fn:
-        g.state = load_state(args.load_state_fn)
-        g.logger.info(f"Restoring training from {args.load_state_fn}")
+    g.logger.info("creating new model")
+    g.state = TrainState(args)
+    g.state.model = MemTransformerLM(g.ntokens, args.n_layer, args.n_head, args.d_model,
+                                     args.d_head, args.d_inner, args.dropout, args.dropatt,
+                                     tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
+                                     tie_projs=g.tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
+                                     ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=g.cutoffs,
+                                     same_length=args.same_length, attn_type=args.attn_type,
+                                     clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
+    g.state.model.to(g.device)
+    optimizer_setup(g.state)
+    if args.checkpoint:
+        g.logger.info(f"Restoring model from {args.checkpoint}" +
+                      f" and optimizer from {args.optim_state_dict}" if args.optim_state_dict else "")
+        util.restore_from_checkpoint(g.state.model, g.state.optimizer, args.checkpoint, args.optim_state_dict)
     else:
-        g.logger.info("creating new model")
-        g.state = TrainState(args)
-
-        g.state.model = MemTransformerLM(g.ntokens, args.n_layer, args.n_head, args.d_model,
-                                         args.d_head, args.d_inner, args.dropout, args.dropatt,
-                                         tie_weight=args.tied, d_embed=args.d_embed, div_val=args.div_val,
-                                         tie_projs=g.tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
-                                         ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=g.cutoffs,
-                                         same_length=args.same_length, attn_type=args.attn_type,
-                                         clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
-        if args.checkpoint:
-            util.restore_from_checkpoint(g.state.model, checkpoint_fn=args.checkpoint)
-        else:
-            g.state.model.apply(weights_init)
-            g.state.model.word_emb.apply(
-                weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
-        g.state.model.to(g.device)
-        optimizer_setup(g.state)
+        g.state.model.apply(weights_init)
+        g.state.model.word_emb.apply(
+            weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
 
     model: MemTransformerLM = g.state.model
     optimizer = g.state.optimizer
+
+    if g.state.args.fp16:
+        model = FP16_Module(model)
+        optimizer = FP16_Optimizer(optimizer, static_loss_scale=g.state.args.static_loss_scale,
+                                   dynamic_loss_scale=g.state.args.dynamic_loss_scale,
+                                   dynamic_loss_args={'init_scale': 2 ** 16}, verbose=False)
 
     # log model info
     # n_all_param = sum([p.nelement() for p in model.parameters()])
@@ -765,8 +671,6 @@ if __name__ == '__main__':
         logging_setup()
         data_setup()
         main_loop()
-        if g.args.save_state_fn:
-            save_state(g.state, g.args.save_state_fn)
 
         # Eval one more time.
         evaluate_and_log(g.state.model, g.va_iter, 'val')

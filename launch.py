@@ -43,8 +43,8 @@ parser.add_argument('--conda_env', type=str, default='',
                     help='use custom conda env')
 parser.add_argument('--checkpoint', type=str, default='',
                     help='restore from this checkpoint')
-parser.add_argument('--checkpoint_state', type=str, default='',
-                    help='restore from this state checkpoint')
+parser.add_argument('--checkpoint_optim', type=str, default='',
+                    help='restore optimizer from this checkpoint')
 
 args = parser.parse_args()
 
@@ -471,8 +471,8 @@ def main():
 
     if args.checkpoint or config.checkpoint:
         user_params['checkpoint'] = util.one_of([args.checkpoint, config.checkpoint])
-    if args.checkpoint_state:
-        user_params['load_state_fn'] = args.checkpoint_state
+    if args.checkpoint_optim or config.checkpoint_optim:
+        user_params['optim_state_dict'] = util.one_of([args.checkpoint_optim, config.checkpoint_optim])
 
     if config.optim_state_dict:
         user_params['optim_state_dict'] = config.optim_state_dict

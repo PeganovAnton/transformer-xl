@@ -13,7 +13,7 @@ import torch.distributed as dist
 from torch import optim, nn
 
 import globals as g
-from data_utils import LMOrderedIterator
+from fp16_opt import FP16_Optimizer
 
 
 def toscalar(t):  # use on python scalars/pytorch scalars
@@ -97,6 +97,13 @@ def unwrap_model(model):
     return model
 
 
+def unwrap_fp16_optimizer(optimizer):
+    if isinstance(optimizer, FP16_Optimizer):
+        return optimizer.optimizer
+    else:
+        return optimizer
+
+
 # no_op method/object that accept every signature
 class NoOp:
     def __getattr__(self, *_args):
@@ -127,11 +134,10 @@ class NoOp:
 #     print(f"{get_global_rank()}  -- After broadcast {pp.view(-1)[0]}")
 
 
-def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
-                            optimizer_state_dict_fn: str = '', force_fp16=False,
-                            override_lr=0):
-    """Restores model wrapped in DistributedDataParallel from checkpoint file.
-    Assumes checkpoint was saved as torch.save(ddp.module).
+def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '', optimizer_state_dict_fn: str = '',
+                            force_fp16=False, override_lr=None):
+    """Restores model wrapped in DistributedDataParallel or/and FP16_Module from checkpoint file.
+    Assumes checkpoint was saved as torch.save(unwrap_model(ddp_FP16_module)).
 
     If optimizer_state_dict_fn is provided, also tries to restore optimizer state from state_dict saved in that file.
 
@@ -147,9 +153,9 @@ def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
     model.load_state_dict(state_dict)
 
     assert 'FP16_Optimizer' not in type(optimizer).__name__, f"Checkpoint restore works on PyTorch optimizers, but " \
-        f"found {type(optimizer).__name__}, found unwrap your optimizer first"
+        f"found {type(optimizer).__name__}, you must unwrap your optimizer first"
     if optimizer_state_dict_fn:
-        optimizer_state_dict = torch.load(optimizer_state_dict_fn)
+        optimizer_state_dict = torch.load(optimizer_state_dict_fn, map_location="cpu")
         # another layer of indirection added for FP16Optimizer
         if 'optimizer_state_dict' in optimizer_state_dict:
             optimizer_state_dict = optimizer_state_dict['optimizer_state_dict']
@@ -158,14 +164,14 @@ def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '',
         optimizer.load_state_dict(optimizer_state_dict)
 
 
-def dist_save_checkpoint(ddp_model, optimizer_, directory: str, suffix=''):
+def dist_save_checkpoint(ddp_fp16_model, optimizer, directory: str, suffix=''):
     """Saves model/optimizer into {directory}/optimizer-{suffix}.py and {directory}/model-{suffix}.pt"""
     if get_global_rank() != 0:
         return
     with open(directory + f'/model-{suffix}.pt', 'wb') as f_1:
-        torch.save(ddp_model.module, f_1)
+        torch.save(unwrap_model(ddp_fp16_model), f_1)
     with open(directory + f'/optimizer-{suffix}.pt', 'wb') as f_1:
-        torch.save(optimizer_.state_dict(), f_1)
+        torch.save(unwrap_fp16_optimizer(optimizer).state_dict(), f_1)
 
 
 def get_hash(o):
