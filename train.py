@@ -1,7 +1,5 @@
 # coding: utf-8
-#
 import argparse
-import copy
 import itertools
 import logging
 import math
@@ -9,9 +7,8 @@ import os
 import random
 import sys
 import time
-from typing import Optional, List, Dict
+from typing import Optional, List
 
-import dill as dill
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -29,7 +26,6 @@ from fp16_opt import FP16_Module, FP16_Optimizer
 from log import log_tb, logging_setup, log_sample, timeit
 from lr_finder import LRFinder
 from mem_transformer import MemTransformerLM
-
 
 parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
 parser.add_argument('--logdir', type=str, default='/tmp/default', help="where logs and events go")
@@ -422,8 +418,8 @@ def main_loop():
     args = g.args
 
     if not args.local:
-        g.logger.info(
-            f'Distributed initializing process group with {args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
+        g.logger.info(f'Distributed initializing process group with '
+                      f'{args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
         dist.init_process_group(backend=args.dist_backend,
                                 init_method=args.dist_url,
                                 world_size=util.get_world_size())
@@ -531,9 +527,8 @@ def main_loop():
                     batch_total = util.dist_sum_tensor(batch_total)  # global batch size
                 batch_total = util.toscalar(batch_total)
 
-                total_tokens = batch_total * seq_len
-                should_log = g.state.train_step < args.verbose_log_steps or (
-                            g.state.train_step + 1) % args.log_interval == 0
+                should_log = (g.state.train_step < args.verbose_log_steps) or \
+                             (g.state.train_step + 1) % args.log_interval == 0
 
                 model.zero_grad()
 
@@ -597,8 +592,11 @@ def main_loop():
                     # compute average loss over last logging interval
                     cur_loss = accumulated_loss / elapsed_steps
                     cur_loss = util.dist_mean(cur_loss)
-                    log_str = f'| epoch {epoch:3d} step {g.state.train_step:>8d} | {batch:>6d} batches | lr {optimizer.param_groups[0]["lr"]:.3g} ' \
-                        f'| ms/batch {elapsed_time * 1000 / elapsed_steps:5.2f} | loss {cur_loss:5.2f}'
+                    log_str = f'| epoch {epoch:3d} step {g.state.train_step:>8d} ' \
+                              f'| {batch:>6d} batches ' \
+                              f'| lr {optimizer.param_groups[0]["lr"]:.3g} ' \
+                              f'| ms/batch {elapsed_time * 1000 / elapsed_steps:5.2f} ' \
+                              f'| loss {cur_loss:5.2f}'
                     if args.dataset in ['enwik8', 'text8']:
                         log_str += f' | bpc {cur_loss / math.log(2):9.5f}'
                     else:
