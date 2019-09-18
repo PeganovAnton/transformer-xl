@@ -67,19 +67,19 @@ def get_test_file_paths(parent_path: str) -> str:
     return os.path.join(parent_path, f"test.txt")
 
 
-def write_examples(file_path: str, examples: Generator[Tuple[str, str], None, None], min_file_size: int) -> bool:
+def write_examples(file_path: str, examples: Generator[Tuple[str, str], None, None], file_size: int = None) -> bool:
+    if not file_size:
+        file_size = float("+inf")
     file_object = open(file_path, "wt", encoding="utf-8")
     cur_file_size = 0
 
-    for example_path, content in examples:
-        filename = get_project_relative_path(example_path)
-
+    for filename, content in examples:
         if filename_is_good(filename) and content_is_good(content):
             filename, content = filter_filename(filename), filter_content(content)
             to_write = merge_path_content(filename, content)
             cur_file_size += file_object.write(to_write)
 
-        if cur_file_size >= min_file_size:
+        if cur_file_size >= file_size:
             file_object.close()
             return True
     file_object.close()
@@ -106,7 +106,9 @@ def get_examples_generator(tar_path: str) -> Generator[Tuple[str, str], None, No
                 continue
 
             file_object = tar.extractfile(file)
-            files_batch.append((file.name, file_object.read().decode(encoding="utf-8", errors="ignore")))
+            files_batch.append(
+                (get_project_relative_path(file.name), file_object.read().decode(encoding="utf-8", errors="ignore"))
+            )
             file_object.close()
 
         random.shuffle(files_batch)
