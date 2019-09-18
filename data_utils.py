@@ -255,7 +255,7 @@ class Corpus:
     valid: Optional[torch.LongTensor]
     test: Optional[torch.LongTensor]
 
-    def __init__(self, path, dataset, use_bpe, *args, **kwargs):
+    def __init__(self, path, dataset, use_bpe, valid_custom=None, *args, **kwargs):
         self.dataset = dataset
         train_paths = None
         file_paths = None
@@ -329,6 +329,9 @@ class Corpus:
             if g.args.test:  # in testing mode we use smaller dataset
                 valid_path = sorted(file_paths)[-1]
                 test_path = sorted(file_paths)[-1]
+            if valid_custom:
+                g.logger.info(f"Using file {valid_custom} as validation file")
+                valid_path = valid_custom
             self.valid = self.vocab.encode_file(valid_path, ordered=True)
             self.test = self.vocab.encode_file(test_path, ordered=True)
             self.train = None
@@ -385,7 +388,7 @@ class Corpus:
             return LMOrderedIterator(data, *args, **kwargs)
 
 
-def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> Corpus:
+def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None, valid_custom=None) -> Corpus:
     """Factory method for Corpus.
 
     Arguments:
@@ -393,6 +396,7 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
         use_bpe: OpenAI's BPE encoding
         datadir: Where does the data live?
         dataset: eg 'wt103' which tells the Corpus how to parse the data.
+        valid_custom: path to custom valid file. Currently supported only for git dataset.
     """
     cache_filepath = os.path.join(datadir, 'cache.pt.bpe' if use_bpe else 'cache.pt')
     # Don't cache dataset for wiki, it's just a file list.
@@ -415,7 +419,7 @@ def get_lm_corpus(datadir: str, dataset: str, use_bpe=False, max_size=None) -> C
         elif dataset in ['enwik8', 'text8']:
             pass
 
-        corpus = Corpus(datadir, dataset, use_bpe, **kwargs)
+        corpus = Corpus(datadir, dataset, use_bpe, valid_custom=valid_custom, **kwargs)
         with portalocker.Lock(cache_filepath, timeout=60) as _:
             torch.save(corpus, cache_filepath)
 

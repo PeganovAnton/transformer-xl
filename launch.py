@@ -50,6 +50,8 @@ parser.add_argument('--optim_state_dict', type=str, default='',
 
 parser.add_argument('--skip_files', type=float, default=0,
                     help='how many files skip in the first epoch')
+parser.add_argument('--valid_custom', type=str, default=None,
+                    help='url to custom valid file')
 
 args = parser.parse_args()
 
@@ -138,7 +140,8 @@ one_tiny_machine_git = {
         'scheduler': 'constant',
         'data': 'data/git',
         'dataset': 'git',
-    }
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman.txt',
 }
 
 one_small_machine_git = {
@@ -154,7 +157,8 @@ one_small_machine_git = {
         'scheduler': 'constant',
         'data': 'data/git',
         'dataset': 'git',
-    }
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman.txt',
 }
 
 one_small_machine_git_checkpoint = {
@@ -171,7 +175,8 @@ one_small_machine_git_checkpoint = {
         'scheduler': 'constant',
         'data': 'data/git',
         'dataset': 'git',
-    }
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman.txt',
 }
 
 # 93.6% checkpoint + p3dn instance
@@ -191,7 +196,8 @@ one_small_machine_git_checkpoint_p3dn = {
         'scheduler': 'constant',
         'data': 'data/git',
         'dataset': 'git',
-    }
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman.txt',
 }
 
 one_machine_git = {
@@ -209,7 +215,8 @@ one_machine_git = {
         'scheduler': 'constant',
         'data': 'data/git',
         'dataset': 'git',
-    }
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman.txt',
 }
 
 # Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
@@ -496,6 +503,15 @@ def main():
         user_params['checkpoint'] = util.one_of([args.checkpoint, config.checkpoint])
     if args.optim_state_dict or config.optim_state_dict:
         user_params['optim_state_dict'] = util.one_of([args.optim_state_dict, config.optim_state_dict])
+
+    if config.valid_custom:
+        job.run('wget ' + config.valid_custom)
+        valid_fn = os.path.basename(config.valid_custom)
+        user_params['valid_custom'] = valid_fn
+    if args.valid_custom:
+        job.run('wget ' + args.valid_custom)
+        valid_fn = os.path.basename(args.valid_custom)
+        user_params['valid_custom'] = valid_fn
 
     if args.wiki:
         worker_params.update({

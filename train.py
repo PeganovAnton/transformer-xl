@@ -186,6 +186,9 @@ parser.add_argument('--auto_shutdown_failure_delay_mins', default=60, type=int,
 # testing flags
 parser.add_argument('--test', type=str, default='', help='run test')
 
+parser.add_argument('--valid_custom', type=str, default=None,
+                    help='url to custom valid file')
+
 
 def parse_args(cmd_args=sys.argv[1:]):
     args = parser.parse_args(cmd_args)
@@ -228,7 +231,7 @@ def data_setup():
     ###############################################################################
     # Load data
     ###############################################################################
-    g.corpus = get_lm_corpus(g.args.data, g.args.dataset, use_bpe=g.args.bpe)
+    g.corpus = get_lm_corpus(g.args.data, g.args.dataset, use_bpe=g.args.bpe, valid_custom=g.args.valid_custom)
     g.ntokens = len(g.corpus.vocab)
 
     g.va_iter, g.te_iter = [
