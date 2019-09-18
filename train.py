@@ -123,9 +123,6 @@ parser.add_argument('--checkpoint_at_end', type=int, default=0,
 parser.add_argument('--checkpoint', type=str, default='',
                     help='checkpoint file to use to restore training')
 
-parser.add_argument('--load_state_fn', type=str, default='', help='location of state file to restore')
-parser.add_argument('--save_state_fn', type=str, default='', help='location of state file to save')
-
 parser.add_argument('--optim_state_dict', type=str, default='',
                     help='checkpoint (state_dict) of optimizer')
 parser.add_argument('--restart', action='store_true',
@@ -450,16 +447,15 @@ def main_loop():
     # g.logger.info('params %s non_emb_params %s', n_all_param, n_nonemb_param)
 
     # scheduler
-    if not g.args.load_state_fn:
-        if args.scheduler == 'cosine':
-            # Divide by 1e6 for numerical stability.
-            g.state.scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens // 1e6,
-                                                                     eta_min=args.eta_min)
-        elif args.scheduler == 'finder':
-            g.state.scheduler: LRFinder = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
-        else:
-            assert args.scheduler == 'constant'
-            g.state.scheduler = util.NoOp()
+    if args.scheduler == 'cosine':
+        # Divide by 1e6 for numerical stability.
+        g.state.scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.max_tokens // 1e6,
+                                                                 eta_min=args.eta_min)
+    elif args.scheduler == 'finder':
+        g.state.scheduler: LRFinder = LRFinder(optimizer, args.max_tokens, init_value=args.lr / 1e3)
+    else:
+        assert args.scheduler == 'constant'
+        g.state.scheduler = util.NoOp()
 
     # Setup distributed model
     if args.local:
