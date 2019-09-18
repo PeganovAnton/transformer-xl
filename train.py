@@ -379,19 +379,6 @@ def optimizer_setup(state):
     state.optimizer = optimizer
 
 
-# State loading/saving. Designed for restoring after pre-emptions. Assumes all sources, args and environment are
-# the same.
-
-# Because args are required to run creation procedures that are not pickled, args are included as part of the state.
-# When restoring from state, existing args are ignored
-
-# arg values which are not saved as part of the state, and are instead loaded from args
-excluded_args = ['save_state_fn', 'load_state_fn']
-
-# arg values that can be saved as part of state, but current arg values will override it
-overridable_args = ['max_tokens', 'logdir', 'checkpoint', 'optim_state_dict']
-
-
 class TrainState(util.FrozenClass):
     model: Optional[nn.Module] = None
     optimizer: Optional[torch.optim.Adam] = None
@@ -443,8 +430,8 @@ def main_loop():
         util.restore_from_checkpoint(g.state.model, g.state.optimizer, args.checkpoint, args.optim_state_dict)
     else:
         g.state.model.apply(weights_init)
-        g.state.model.word_emb.apply(
-            weights_init)  # ensure embedding init is not overridden by out_layer in case of weight sharing
+        # ensure embedding init is not overridden by out_layer in case of weight sharing
+        g.state.model.word_emb.apply(weights_init)
 
     model: MemTransformerLM = g.state.model
     optimizer = g.state.optimizer
