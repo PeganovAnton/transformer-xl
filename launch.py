@@ -48,6 +48,9 @@ parser.add_argument('--checkpoint', type=str, default='',
 parser.add_argument('--optim_state_dict', type=str, default='',
                     help='restore optimizer from this checkpoint')
 
+parser.add_argument('--skip_files', type=float, default=0,
+                    help='how many files skip in the first epoch')
+
 args = parser.parse_args()
 
 # default environment settings, should change rarely since they affect
@@ -486,6 +489,8 @@ def main():
         user_params['checkpoint_each_epoch'] = args.checkpoint_each_epoch
     if config.warmup_tokens:
         user_params['warmup_tokens'] = config.warmup_tokens
+    if args.skip_files:
+        user_params['skip_files'] = args.skip_files
 
     if args.checkpoint or config.checkpoint:
         user_params['checkpoint'] = util.one_of([args.checkpoint, config.checkpoint])

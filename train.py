@@ -122,6 +122,8 @@ parser.add_argument('--checkpoint_at_end', type=int, default=0,
                     help='whether to checkpoint things at the end of training')
 parser.add_argument('--checkpoint', type=str, default='',
                     help='checkpoint file to use to restore training')
+parser.add_argument('--skip_files', type=float, default=0,
+                    help='how many files skip in the first epoch')
 
 parser.add_argument('--optim_state_dict', type=str, default='',
                     help='checkpoint (state_dict) of optimizer')
@@ -490,7 +492,7 @@ def main_loop():
                 g.state.tr_iter = g.corpus.get_dist_iterator('train', rank=util.get_global_rank(),
                                                              max_rank=util.get_world_size(),
                                                              bsz=args.batch_size, bptt=args.tgt_len, device=g.device,
-                                                             ext_len=args.ext_len)
+                                                             ext_len=args.ext_len, skip_files=g.args.skip_files)
                 g.state.mems = tuple()
             g.state.last_epoch = epoch
 

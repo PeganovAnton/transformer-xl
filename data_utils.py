@@ -149,7 +149,7 @@ class LMShuffledIterator:
 
 class LMMultiFileIterator:
     def __init__(self, paths: Sequence[str], vocab: Vocab, bsz: int, bptt: int, device='cpu', ext_len=None,
-                 shuffle: bool = False):
+                 shuffle: bool = False, skip_files: float = 0):
 
         self.paths = paths
         self.vocab = vocab
@@ -163,8 +163,12 @@ class LMMultiFileIterator:
         self.device = device
         self.shuffle = shuffle
 
+        assert not skip_files < 0, f"skip_files is {skip_files}, but it must be non-negative"
+        skip_files, self.skip_tokens = divmod(skip_files, 1)
+
         # fields to store positions of iterator
-        self.file_offset = 0
+        g.logger.info(f"skipping {int(skip_files)} files...")
+        self.file_offset = int(skip_files)
         self.stream_offsets = [0] * self.bsz
 
     def __iter__(self):
@@ -179,6 +183,14 @@ class LMMultiFileIterator:
             g.logger.info(f"training on file {path}...")
 
             sents: torch.LongTensor = self.vocab.encode_file(path, add_double_eos=True)
+
+            # noinspection PyTypeChecker
+            tokens_to_skip = int(len(sents) * self.skip_tokens)
+            self.skip_tokens = 0
+            g.logger.info(f"skipping first {tokens_to_skip} tokens...")
+            # noinspection PyTypeChecker
+            sents = sents[tokens_to_skip:]
+
             if self.shuffle:
                 np.random.shuffle(sents)
                 assert False, 'todo(y): check quality, spot check shows that >90% of data is left in original pos'
@@ -331,7 +343,7 @@ class Corpus:
 
         self.train_files = natsort.natsorted(self.train_files)
 
-    def get_dist_iterator(self, split: str, *args, rank: int = 0, max_rank: int = 1, **kwargs):
+    def get_dist_iterator(self, split: str, *args, rank: int = 0, max_rank: int = 1, skip_files: float = .0, **kwargs):
         """Get an iterator that only operates on rank'th independent subset of the data."""
         if split == 'train':
             data = self.train
@@ -344,7 +356,7 @@ class Corpus:
         # special handling for large datasets, don't load training set in memory
         if self.dataset in ['lm1b', 'wiki', 'git'] and split == 'train':
             file_subset = list(chunk(self.train_files, max_rank))[rank]
-            return LMMultiFileIterator(file_subset, self.vocab, *args, **kwargs)
+            return LMMultiFileIterator(file_subset, self.vocab, skip_files=skip_files, *args, **kwargs)
 
         # noinspection PyTypeChecker
         assert len(data), f"data attribute '{split}' empty for iterator.dataset={self.dataset}"
