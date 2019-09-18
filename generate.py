@@ -10,7 +10,6 @@ from typing import List
 import torch
 import torch.nn.functional as F
 import tqdm
-from pytorch_pretrained_bert import GPT2Tokenizer
 
 from mem_transformer import MemTransformerLM
 from util import unwrap_model
@@ -85,9 +84,10 @@ def prepare_wiki_context(context: str) -> str:
 
 def generate_text(model: MemTransformerLM, context: str, length: int,
                   num_examples: int = 1, temperature: float = 1.0, top_k: int = 0, top_p: float = 0.,
-                  batch_len: int = 384, tokenizer=None) -> List[str]:
+                  batch_len: int = 384, tokenizer=None, verbose=True) -> List[str]:
     model.eval()
     if not tokenizer:
+        from pytorch_pretrained_bert import GPT2Tokenizer
         tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     context = tokenizer.encode(context)
 
@@ -100,13 +100,15 @@ def generate_text(model: MemTransformerLM, context: str, length: int,
         # Init mems with context, except for the last token
         context_batches = torch.split(data[:-1], batch_len, dim=0)
         mems = model.init_mems()
-        print("Prepare context for text generating...")
-        for batch in tqdm.tqdm(context_batches):
+        if verbose:
+            print("Prepare context for text generating...")
+        for batch in tqdm.tqdm(context_batches, disable=not verbose):
             _, mems = predict(model, batch, mems)
 
         # Generate text
-        print("Generate text...")
-        for _ in tqdm.trange(length):
+        if verbose:
+            print("Generate text...")
+        for _ in tqdm.trange(length, disable=not verbose):
             # Grab a sample from the last frame, append to result list, append to `data`
             pred_hid, mems = predict(model, data[-1:], mems)
             softmax = hidden_to_softmax(model, pred_hid.squeeze(0), top_k=top_k, temperature=temperature, top_p=top_p)

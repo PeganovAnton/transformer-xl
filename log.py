@@ -11,15 +11,19 @@ import globals as g
 import util
 
 
-def log_tb(tag, val):
+def log_tb(tag, val, use_wandb=True):
     """Log value to tensorboard (relies on g.token_count rather than step count to give comparable graphs across
     batch sizes)"""
-    g.event_writer.add_scalar(tag, val, g.token_count)
+    if use_wandb:
+        if util.get_global_rank() == 0:
+            wandb.log({tag: val}, step=g.token_count)
+    else:
+        g.event_writer.add_scalar(tag, val, g.token_count)
 
 
 def logging_setup():
     if util.get_global_rank() == 0:
-        wandb.init(project="Transformer-XL source code", name=g.args.run_name, sync_tensorboard=True)
+        wandb.init(project="Transformer-XL source code", name=g.args.run_name)
 
     g.logger = FileLogger(g.args.logdir, global_rank=util.get_global_rank(), local_rank=g.args.local_rank)
     if util.get_global_rank() == 0:
@@ -32,7 +36,6 @@ def logging_setup():
         g.logger.info(f'    - {k} : {v}')
     g.logger.info('=' * 100)
     g.timeit_dict = OrderedDict()
-    g.event_writer = util.NoOp()
     g.token_count = 0
 
     if util.get_global_rank() == 0:
