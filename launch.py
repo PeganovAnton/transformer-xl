@@ -200,6 +200,27 @@ one_small_machine_git_checkpoint_p3dn = {
     'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman.txt',
 }
 
+# 93.6% checkpoint + p3dn instance + long warmup
+one_16x_machine_git_newcheckpoint = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 18,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-85-model.pt',
+    'optimizer_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-85-optimizer.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e6,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman.txt',
+}
+
 one_machine_git = {
     'base_lr': 0.001 / 4,  # Divide by 2 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
