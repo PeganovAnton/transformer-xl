@@ -8,6 +8,7 @@ logger = None
 corpus = None
 va_iter = None
 te_iter = None
+va_custom_iter = None
 
 
 tie_projs = None

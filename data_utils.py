@@ -259,6 +259,7 @@ class Corpus:
         self.dataset = dataset
         train_paths = None
         file_paths = None
+        self.valid_custom = None
 
         if use_bpe:
             self.vocab = OpenAIVocab(kwargs['max_size'], kwargs.get('vocab_file'))
@@ -330,8 +331,8 @@ class Corpus:
                 valid_path = sorted(file_paths)[-1]
                 test_path = sorted(file_paths)[-1]
             if valid_custom:
-                g.logger.info(f"Using file {valid_custom} as validation file")
-                valid_path = valid_custom
+                g.logger.info(f"Using file {valid_custom} as additional validation file")
+                self.valid_custom = self.vocab.encode_file(valid_custom, ordered=True)
             self.valid = self.vocab.encode_file(valid_path, ordered=True)
             self.test = self.vocab.encode_file(test_path, ordered=True)
             self.train = None
@@ -352,6 +353,9 @@ class Corpus:
             data = self.train
         elif split == 'valid':
             data = self.valid
+        elif split == 'valid_custom':
+            assert self.valid_custom is not None, "Custom validation file was not specified while the Corpus initialization"
+            data = self.valid_custom
         else:
             assert split == 'test'
             data = self.test

@@ -201,7 +201,7 @@ one_small_machine_git_checkpoint_p3dn = {
 }
 
 # 93.6% checkpoint + p3dn instance + long warmup
-one_16x_machine_git_newcheckpoint = {
+one_p3dn_machine_git_newcheckpoint = {
     'base_lr': 0.001 / 4,
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 18,

@@ -240,6 +240,10 @@ def data_setup():
                                    device=g.device, ext_len=g.args.ext_len)
         for split in ('valid', 'test')
     ]
+    if g.args.valid_custom:
+        g.va_custom_iter = g.corpus.get_dist_iterator('valid_custom', bsz=g.args.batch_size * 2, bptt=g.args.tgt_len,
+                                                      rank=util.get_global_rank(), max_rank=util.get_world_size(),
+                                                      device=g.device, ext_len=g.args.ext_len)
 
 
 ###############################################################################
@@ -301,7 +305,7 @@ def weights_init(m):
 ###############################################################################
 
 
-def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
+def evaluate_and_log(model: torch.nn.Module, eval_iter, split, generate_text=True):
     args = g.args
     state = g.state
     optimizer = g.state.optimizer
@@ -322,7 +326,7 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
     total_loss, accuracy_top1, accuracy_top5, MRR, total_len = \
         ret["total_loss"], ret["accuracy_top1"], ret["accuracy_top5"], ret["MRR_top5"], ret["total_len"]
 
-    if util.get_global_rank() == 0:
+    if generate_text and util.get_global_rank() == 0:
         # Get samples
         _, unconditional_sample = sample_text(model, length=1000)
         context, conditional_sample = sample_text(model, length=1000, conditional_files=["test/data/git/train.py"])
@@ -570,6 +574,8 @@ def main_loop():
 
                 if g.state.train_step % args.eval_interval == 0:
                     evaluate_and_log(model, g.va_iter, 'val')
+                    if g.va_custom_iter:
+                        evaluate_and_log(g.state.model, g.va_custom_iter, g.args.valid_custom, generate_text=False)
 
                 if should_log:
                     elapsed_time = time.time() - log_start_time
@@ -658,6 +664,8 @@ if __name__ == '__main__':
 
         # Eval one more time.
         evaluate_and_log(g.state.model, g.va_iter, 'val')
+        if g.va_custom_iter:
+            evaluate_and_log(g.state.model, g.va_custom_iter, g.args.valid_custom, generate_text=False)
         torch.distributed.barrier()  # need synchronize before next model reading
 
         # Load the best saved model.
