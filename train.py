@@ -335,28 +335,28 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split):
     model.train()
 
     # Log all the things.
-    mean_loss = total_loss / total_len
-    mean_loss = util.dist_mean(mean_loss)
+    loss = total_loss / total_len
+    mean_loss = util.dist_mean(loss)
     mean_accuracy_top1 = util.dist_mean(accuracy_top1)
     mean_accuracy_top5 = util.dist_mean(accuracy_top5)
     mean_MRR = util.dist_mean(MRR)
     g.logger.info('-' * 100)
     log_str = (f'| Eval {g.state.train_step // args.eval_interval:3d} at step {g.state.train_step:>8d} | '
                f'time: {time.time() - eval_start_time:5.2f}s '
-               f'| {split} loss {mean_loss:5.2f}')
+               f'| {split} loss {loss:5.2f}')
     log_tb(f'learning/{split}_loss', mean_loss)
     if args.dataset in ['enwik8', 'text8']:
-        log_str += f' | bpc {mean_loss / math.log(2):9.5f}'
+        log_str += f' | bpc {loss / math.log(2):9.5f}'
         log_tb(f'learning/{split}_bpc', mean_loss / math.log(2))
     elif args.dataset == 'git':
-        log_str += f' | accuracy@1 {mean_accuracy_top1:.2f} ' \
-                   f'| accuracy@5 {mean_accuracy_top5:.2f} ' \
-                   f'| MRR@5 {mean_MRR:.2f}'
+        log_str += f' | accuracy@1 {accuracy_top1:.2f} ' \
+                   f'| accuracy@5 {accuracy_top5:.2f} ' \
+                   f'| MRR@5 {MRR:.2f}'
         log_tb(f'learning/{split}_acc@1', mean_accuracy_top1)
         log_tb(f'learning/{split}_acc@5', mean_accuracy_top5)
         log_tb(f'learning/{split}_MRR@5', mean_MRR)
     else:
-        log_str += f' | {split} ppl {math.exp(mean_loss):9.3f}'
+        log_str += f' | {split} ppl {math.exp(loss):9.3f}'
         log_tb(f'learning/{split}_ppl', math.exp(mean_loss))
     g.logger.info(log_str)
     g.logger.info('-' * 100)
@@ -577,7 +577,7 @@ def main_loop():
 
                     # compute average loss over last logging interval
                     cur_loss = accumulated_loss / elapsed_steps
-                    cur_loss = util.dist_mean(cur_loss)
+                    cur_loss_mean = util.dist_mean(cur_loss)
                     log_str = f'| epoch {epoch:3d} step {g.state.train_step:>8d} ' \
                               f'| {batch:>6d} batches ' \
                               f'| lr {optimizer.param_groups[0]["lr"]:.3g} ' \
@@ -589,9 +589,9 @@ def main_loop():
                         log_str += f' | ppl {math.exp(cur_loss):9.3f}'
                     g.logger.info(log_str)
                     log_tb('learning/epoch', epoch)
-                    log_tb('_loss', cur_loss)  # the most important thing
-                    log_tb('learning/loss', cur_loss)
-                    log_tb('learning/ppl', math.exp(cur_loss))
+                    log_tb('_loss', cur_loss_mean)  # the most important thing
+                    log_tb('learning/loss', cur_loss_mean)
+                    log_tb('learning/ppl', math.exp(cur_loss_mean))
 
                     # currently step timings are not synchronized in multi-machine
                     # case (see #4). Can add torch.distributed.barrier() to get
