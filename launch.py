@@ -302,7 +302,7 @@ one_small_machine_newgit_checkpoint_p3dn2x = {
 one_small_machine_newgit_p3dn_huge = {
     'base_lr': 0.001 / 4,
     'instance_type': 'p3dn.24xlarge',
-    'local_batch_size': 6,
+    'local_batch_size': 5,
     'machines': 1,
     'huge': True,
     'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
@@ -502,6 +502,7 @@ HUGE_ARGS = {
     'dynamic_loss_scale': True,
     'init_std': 0.005,
     'div_val': 4,
+    'freeze_below': 18,
 }
 
 
