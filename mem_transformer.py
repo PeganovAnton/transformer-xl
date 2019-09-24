@@ -12,6 +12,9 @@ sys.path.append('utils')
 from proj_adaptive_softmax import ProjectedAdaptiveLogSoftmax
 from log_uniform_sampler import LogUniformSampler, sample_logits
 
+
+import globals as gl
+
 class PositionalEmbedding(nn.Module):
     def __init__(self, demb):
         super(PositionalEmbedding, self).__init__()
@@ -512,7 +515,7 @@ class MemTransformerLM(nn.Module):
                  tgt_len=None, ext_len=None, mem_len=None, 
                  cutoffs=[], adapt_inp=False,
                  same_length=False, attn_type=0, clamp_len=-1, 
-                 sample_softmax=-1, fp32_embedding = False, fp32_layernorm = False):
+                 sample_softmax=-1, fp32_embedding = False, fp32_layernorm = False, freeze_below=0):
         super(MemTransformerLM, self).__init__()
         self.n_token = n_token
 
@@ -528,6 +531,7 @@ class MemTransformerLM(nn.Module):
         self.drop = nn.Dropout(dropout)
 
         self.n_layer = n_layer
+        self.freeze_below = freeze_below
 
         self.tgt_len = tgt_len
         self.mem_len = mem_len
@@ -545,6 +549,9 @@ class MemTransformerLM(nn.Module):
                         tgt_len=tgt_len, ext_len=ext_len, mem_len=mem_len,
                         dropatt=dropatt, pre_lnorm=pre_lnorm)
                 )
+                if i < self.freeze_below:
+                    for p in self.layers[-1].parameters():
+                        p.requires_grad = False
         elif attn_type == 1: # learnable embeddings
             for i in range(n_layer):
                 self.layers.append(
@@ -560,6 +567,9 @@ class MemTransformerLM(nn.Module):
                         n_head, d_model, d_head, d_inner, dropout,
                         dropatt=dropatt, pre_lnorm=pre_lnorm)
                 )
+                if i < self.freeze_below:
+                    for p in self.layers[-1].parameters():
+                        p.requires_grad = False
 
         self.sample_softmax = sample_softmax
         # use sampled softmax
