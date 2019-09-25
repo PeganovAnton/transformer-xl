@@ -146,7 +146,7 @@ def restore_from_checkpoint(model, optimizer=None, checkpoint_fn: str = '', opti
     if force_fp16:
         for name in state_dict:
             state_dict[name] = state_dict[name].half()
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
 
     assert 'FP16_Optimizer' not in type(optimizer).__name__, \
         f"Checkpoint restore works on PyTorch optimizers, but found {type(optimizer).__name__}, " \

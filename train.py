@@ -38,6 +38,8 @@ parser.add_argument('--dataset', type=str, default='wt103',
                     help='dataset name')
 parser.add_argument('--n_layer', type=int, default=12,
                     help='number of total layers')
+parser.add_argument('--freeze_below', type=int, default=0,
+                    help='dont adjust layers below this layer')
 parser.add_argument('--n_head', type=int, default=10,
                     help='number of heads')
 parser.add_argument('--d_head', type=int, default=50,
@@ -427,7 +429,7 @@ def main_loop():
                                      tie_projs=g.tie_projs, pre_lnorm=args.pre_lnorm, tgt_len=args.tgt_len,
                                      ext_len=args.ext_len, mem_len=args.mem_len, cutoffs=g.cutoffs,
                                      same_length=args.same_length, attn_type=args.attn_type,
-                                     clamp_len=args.clamp_len, sample_softmax=args.sample_softmax)
+                                     clamp_len=args.clamp_len, sample_softmax=args.sample_softmax, freeze_below=args.freeze_below)
     g.state.model.to(g.device)
     optimizer_setup(g.state)
     if args.checkpoint:
@@ -545,24 +547,24 @@ def main_loop():
                 else:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
-                optimizer.step()
-                g.state.train_step += 1
 
                 # step-wise learning rate annealing
                 if hasattr(optimizer, 'overflow') and optimizer.overflow:
                     g.logger.info("skipped iteration")
                 else:
-                    # TODO(y): simplify
                     if args.scheduler in ['cosine', 'constant', 'dev_perf']:
                         # linear warmup stage
                         if g.state.token_count < args.warmup_tokens:
-                            curr_lr = args.lr * g.state.token_count / args.warmup_tokens
+                            curr_lr = args.lr * float(g.state.token_count) / args.warmup_tokens
                             optimizer.param_groups[0]['lr'] = curr_lr
                         elif args.scheduler == 'cosine':
                             # Divide by 1e6 for numerical stability.
                             g.state.scheduler.step(g.state.token_count // 1000 // 1000)
                     else:
                         g.state.scheduler.step(g.state.token_count)
+
+                optimizer.step()
+                g.state.train_step += 1
 
                 consumed_tokens = data.shape[0] * data.shape[1]
                 tokens_per_epoch += consumed_tokens

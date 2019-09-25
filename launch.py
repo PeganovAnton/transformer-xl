@@ -23,8 +23,7 @@ parser.add_argument('--skip_setup', action='store_true',
 
 parser.add_argument('--wiki', action='store_true',
                     help='Train on all of wikipedia.')
-parser.add_argument('--git', action='store_true',
-                    help='Train on git dataset.')
+parser.add_argument('--git', action='store_true',                    help='Train on git dataset.')
 parser.add_argument('--bpe', action='store_true',
                     help='Use BPE to reduce vocab instead of adaptive softmax div')
 
@@ -240,6 +239,140 @@ one_p3_machine_biggit_newcheckpoint = {
     'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman_85gb.txt',
 }
 
+one_small_machine_newgit_checkpoint = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3.16xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
+one_small_machine_newgit_checkpoint_nodrop = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3.16xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'nodrop': True,
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
+# sanity check that p3dn's are not broken
+one_small_machine_newgit_checkpoint_p0 = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
+
+one_small_machine_newgit_checkpoint_p3dn = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 18,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'optimizer_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-optimizer.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
+# 3x lower learning rate
+one_small_machine_newgit_checkpoint_p3dn_slow = {
+    'base_lr': 0.001 / 4 / 3,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 18,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'optimizer_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-optimizer.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
+
+one_small_machine_newgit_checkpoint_p3dn2x = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 9,
+    'machines': 2,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'optimizer_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-optimizer.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
+one_small_machine_newgit_p3dn_huge = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 5,
+    'machines': 1,
+    'huge': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
 one_machine_git = {
     'base_lr': 0.001 / 4,  # Divide by 2 to counteract batch adjustment
     'instance_type': 'p3dn.24xlarge',
@@ -406,6 +539,27 @@ def dict_to_args(dict_: dict):
     return ' '.join([item_to_arg(item) for item in dict_.items()])
 
 
+HUGE_ARGS = {
+    'n_layer': 18*3,
+    'd_model': 1024,
+    'n_head': 16,
+    'd_head': 64,
+    'd_inner': 4096,
+    'dropout': 0.2,
+    'dropatt': 0.2,
+    'optim': 'lamb',
+    'warmup_tokens': 0,
+    'tgt_len': 384,
+    'mem_len': 384,
+    'eval_tgt_len': 128,
+    'fp16': True,
+    'dynamic_loss_scale': True,
+    'init_std': 0.005,
+    'div_val': 4,
+    'freeze_below': 18,
+}
+
+
 # Match https://github.com/kimiyoung/transformer-xl/blob/master/tf/scripts/wt103_large_tpu.sh
 LARGE_ARGS = {
     'n_layer': 18,
@@ -526,9 +680,21 @@ def main():
         'lr': lr,
         'batch_size': local_batch_size,
         'eta_min': lr / 10,
+        'run_name': args.name,
     }
 
-    worker_params.update(LARGE_ARGS if config.large else SMALL_ARGS)
+    if config.huge:
+        worker_params.update(HUGE_ARGS)
+    elif config.large:
+        worker_params.update(LARGE_ARGS)
+    else:
+        worker_params.update(SMALL_ARGS)
+
+    if config.nodrop:
+        # 'dropout': 0.2,
+        # 'dropatt': 0.2,
+        worker_params.dropout = 0
+        worker_params.dropadd = 0
 
     user_params = {}
     # pass through some user-provided settings that were arguments to the launcher script
