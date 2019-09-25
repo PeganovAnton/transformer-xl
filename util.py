@@ -340,3 +340,9 @@ class SaveableIteratorMaker:
 
 def saveable_iterator(data: Sequence) -> Iterator:
     return iter(SaveableIteratorMaker(data))
+
+
+def download_from_s3(url, job):
+    downloaded_fn = os.path.basename(url)
+    job.run(f'rm {downloaded_fn}; wget {url}')
+    return downloaded_fn

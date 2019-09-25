@@ -2,7 +2,6 @@
 """Launch training on AWS with 8 GPUs."""
 
 import argparse
-import os
 import re
 
 import ncluster
@@ -219,6 +218,26 @@ one_p3dn_machine_git_newcheckpoint = {
         'dataset': 'git',
     },
     'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman.txt',
+}
+
+one_p3_machine_biggit_newcheckpoint = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3.16xlarge',
+    'local_batch_size': 18,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-85-model.pt',
+    'optimizer_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-85-optimizer.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e6,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git_85gb',
+        'dataset': 'git',
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman_85gb.txt',
 }
 
 one_machine_git = {
@@ -526,13 +545,11 @@ def main():
         user_params['optim_state_dict'] = util.one_of([args.optim_state_dict, config.optim_state_dict])
 
     if config.valid_custom:
-        job.run('wget ' + config.valid_custom)
-        valid_fn = os.path.basename(config.valid_custom)
-        user_params['valid_custom'] = valid_fn
+        downloaded_fn = util.download_from_s3(config.valid_custom, job)
+        user_params['valid_custom'] = downloaded_fn
     if args.valid_custom:
-        job.run('wget ' + args.valid_custom)
-        valid_fn = os.path.basename(args.valid_custom)
-        user_params['valid_custom'] = valid_fn
+        downloaded_fn = util.download_from_s3(config.valid_custom, job)
+        user_params['valid_custom'] = downloaded_fn
 
     if args.wiki:
         worker_params.update({
@@ -558,12 +575,10 @@ def main():
         })
 
     if config.checkpoint_overwrite:
-        job.run('wget ' + config.checkpoint_overwrite)
-        downloaded_fn = os.path.basename(config.checkpoint_overwrite)
+        downloaded_fn = util.download_from_s3(config.checkpoint_overwrite, job)
         user_params["checkpoint"] = downloaded_fn
     if config.optimizer_overwrite:
-        job.run('wget ' + config.optimizer_overwrite)
-        downloaded_fn = os.path.basename(config.optimizer_overwrite)
+        downloaded_fn = util.download_from_s3(config.optimizer_overwrite, job)
         user_params["optim_state_dict"] = downloaded_fn
 
     worker_params.update(user_params)
