@@ -355,6 +355,24 @@ one_small_machine_newgit_p3dn_huge = {
     }
 }
 
+one_small_machine_newgit_p3dn_huge_nodrop = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 5,
+    'machines': 1,
+    'huge': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'nodrop': True,
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
 
 
 one_machine_git = {
@@ -678,8 +696,8 @@ def main():
     if config.nodrop:
         #'dropout': 0.2,
         #'dropatt': 0.2,
-        worker_params.dropout = 0
-        worker_params.dropadd = 0
+        worker_params['dropout'] = 0
+        worker_params['dropatt'] = 0
 
     user_params = {}
     # pass through some user-provided settings that were arguments to the launcher script
