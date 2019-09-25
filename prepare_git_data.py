@@ -9,8 +9,7 @@ import tqdm
 
 MIN_LENGTH = 5
 
-PROJECT_SPLIT_SYMBOL = "\n龖龖龖\n"
-EXAMPLE_SPLIT_SYMBOL = "\n!龖!\n"
+EXAMPLE_SPLIT_SYMBOL = "\n龖龖龖\n"
 
 TRAIN_FILE_SIZE = 100 * (1000 ** 2)  # Convert 100MB into bytes
 VAL_FILE_SIZE = 1 * (1000 ** 2)
