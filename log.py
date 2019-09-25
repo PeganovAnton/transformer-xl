@@ -16,7 +16,7 @@ def log_tb(tag, val, use_wandb=True):
     batch sizes)"""
     if use_wandb:
         if util.get_global_rank() == 0:
-            wandb.log({tag: val}, step=g.token_count)
+            wandb.log({tag: val}, step=int(g.token_count))
     else:
         g.event_writer.add_scalar(tag, val, g.token_count)
 

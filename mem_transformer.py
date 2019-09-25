@@ -424,14 +424,25 @@ class DecoderLayer(nn.Module):
 
 # type 2 attention
 class RelPartialLearnableDecoderLayer(nn.Module):
-    def __init__(self, n_head, d_model, d_head, d_inner, dropout,
+    def __init__(self, n_head, d_model, d_head, d_inner, dropout, freeze=False,
                  **kwargs):
         super(RelPartialLearnableDecoderLayer, self).__init__()
 
         self.dec_attn = RelPartialLearnableMultiHeadAttn(n_head, d_model,
                             d_head, dropout, **kwargs)
+
         if d_inner > 0:
             self.pos_ff = PositionwiseFF(d_model, d_inner, dropout, pre_lnorm=kwargs.get('pre_lnorm'))
+
+        if freeze:
+            for p in self.parameters():
+                p.requires_grad = False
+            for p in self.dec_attn.parameters():
+                p.requires_grad = False
+            if d_inner > 0:
+                for p in self.pos_ff.parameters():
+                    p.requires_grad = False
+            print("Freezing layer")
 
     def forward(self, dec_inp, r, r_w_bias, r_r_bias, dec_attn_mask=None, mems=None):
 
@@ -547,11 +558,9 @@ class MemTransformerLM(nn.Module):
                     RelPartialLearnableDecoderLayer(
                         n_head, d_model, d_head, d_inner, dropout,
                         tgt_len=tgt_len, ext_len=ext_len, mem_len=mem_len,
-                        dropatt=dropatt, pre_lnorm=pre_lnorm)
+                        dropatt=dropatt, pre_lnorm=pre_lnorm, freeze=(i < self.freeze_below))
                 )
-                if i < self.freeze_below:
-                    for p in self.layers[-1].parameters():
-                        p.requires_grad = False
+    #                if i < self.freeze_below:
         elif attn_type == 1: # learnable embeddings
             for i in range(n_layer):
                 self.layers.append(

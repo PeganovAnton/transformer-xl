@@ -239,6 +239,44 @@ one_small_machine_newgit_checkpoint = {
     }
 }
 
+one_small_machine_newgit_checkpoint_nodrop = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3.16xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'nodrop': True,
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
+# sanity check that p3dn's are not broken
+one_small_machine_newgit_checkpoint_p0 = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
 
 one_small_machine_newgit_checkpoint_p3dn = {
     'base_lr': 0.001 / 4,
@@ -635,6 +673,13 @@ def main():
         worker_params.update(LARGE_ARGS)
     else:
         worker_params.update(SMALL_ARGS)
+
+
+    if config.nodrop:
+        #'dropout': 0.2,
+        #'dropatt': 0.2,
+        worker_params.dropout = 0
+        worker_params.dropadd = 0
 
     user_params = {}
     # pass through some user-provided settings that were arguments to the launcher script
