@@ -1,6 +1,7 @@
 import itertools
 import os
 import random
+import re
 import tarfile
 from argparse import ArgumentParser
 from typing import Tuple, Generator
@@ -17,6 +18,7 @@ TEST_FILE_SIZE = 1 * (1000 ** 2)
 
 SEED = None
 FILES_TO_LOAD_AT_ONCE = 1000000
+DATE_TIME_PATTERN = re.compile(r"[0-9].[0-9]")
 
 
 def filename_is_good(filename: str) -> bool:
@@ -43,9 +45,22 @@ def get_project_relative_path(path: str) -> str:
     if path.startswith("siva_"):
         path = path[5:]
     basename, ext = os.path.splitext(path)
-    names = basename.split("_")
+    names = list(map(str, basename.split("_")))
+
     # Drop time
-    proj_rel_path = "/".join(names[:-1]) + ext
+    # Handle "filename_2019-09-12_15_18_32.py" case
+    if len(names) > 4 and names[-4].startswith("2019-"):
+        names = names[:-4]
+    # Handle "filename_2019-09-12_15:18:32.py" case
+    if len(names) > 2 and names[-2].startswith("2019-"):
+        names = names[:-2]
+    # Handle "filename_1567865896.9038403.py" case
+    elif len(names) > 1 and DATE_TIME_PATTERN.match(names[-1]):
+        names = names[:-1]
+
+    names = list(filter(lambda name: len(name) > 0, names))
+
+    proj_rel_path = os.path.join(*names) + ext if names else ""
 
     return proj_rel_path
 

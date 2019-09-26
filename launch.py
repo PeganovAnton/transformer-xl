@@ -55,7 +55,7 @@ args = parser.parse_args()
 
 # default environment settings, should change rarely since they affect
 # all configs
-IMAGE_NAME = 'cybertronai01_git02'
+IMAGE_NAME = 'cybertronai01_git03'
 # CONDA_ENV = 'pytorch_april_nccl237'
 CONDA_ENV = 'pytorch_p36'
 
@@ -222,7 +222,7 @@ one_p3dn_machine_git_newcheckpoint = {
 one_p3_machine_biggit_newcheckpoint = {
     'base_lr': 0.001 / 4,
     'instance_type': 'p3.16xlarge',
-    'local_batch_size': 18,
+    'local_batch_size': 6,
     'machines': 1,
     'large': True,
     'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-85-model.pt',
