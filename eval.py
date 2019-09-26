@@ -97,7 +97,7 @@ def main():
             logging(format_log(args, evaluate(model, it, split), split))
 
 
-def evaluate(model, eval_iter, label: str, max_eval_steps: int = 0):
+def evaluate(model, eval_iter, label: str, max_eval_steps: int = 0, reset_mems_interval: int = None):
     # Turn on evaluation mode which disables dropout.
     model.eval()
     total_len, total_count = 0, 0
@@ -108,6 +108,8 @@ def evaluate(model, eval_iter, label: str, max_eval_steps: int = 0):
         for i, (data, target, seq_len) in enumerate(bar):
             if 0 < max_eval_steps <= i:
                 break
+            if reset_mems_interval is not None and i % reset_mems_interval == 0:
+                mems = tuple()
 
             ret = model(data, target, *mems, return_hidden=True)
             pred_hid, loss, mems = ret[0].half(), ret[1], ret[2:]

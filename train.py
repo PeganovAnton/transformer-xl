@@ -307,7 +307,8 @@ def weights_init(m):
 ###############################################################################
 
 
-def evaluate_and_log(model: torch.nn.Module, eval_iter, split, generate_text=True):
+def evaluate_and_log(model: torch.nn.Module, eval_iter, split: str, generate_text: bool = True,
+                     reset_mems_interval: int = None):
     args = g.args
     state = g.state
     optimizer = g.state.optimizer
@@ -324,7 +325,7 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split, generate_text=Tru
             args.eval_tgt_len, args.ext_len, args.mem_len + args.tgt_len - args.eval_tgt_len)
 
     # Calculate metrics
-    ret = evaluate(model, eval_iter, split, args.max_eval_steps)
+    ret = evaluate(model, eval_iter, split, args.max_eval_steps, reset_mems_interval=reset_mems_interval)
     total_loss, accuracy_top1, accuracy_top5, MRR, total_len = \
         ret["total_loss"], ret["accuracy_top1"], ret["accuracy_top5"], ret["MRR_top5"], ret["total_len"]
 
@@ -514,6 +515,15 @@ def main_loop():
                 #     break
 
                 # print(g.state.token_count, data)
+
+                if g.state.train_step % args.eval_interval == 0:
+                    evaluate_and_log(model, g.va_iter, 'val_short-mem-1', generate_text=False, reset_mems_interval=1)
+                    evaluate_and_log(model, g.va_iter, 'val_short-mem-2', generate_text=False, reset_mems_interval=2)
+                    evaluate_and_log(model, g.va_iter, 'val_short-mem-3', generate_text=False, reset_mems_interval=3)
+                    evaluate_and_log(model, g.va_iter, 'val')
+                    if g.va_custom_iter:
+                        evaluate_and_log(g.state.model, g.va_custom_iter, g.args.valid_custom, generate_text=False)
+
                 batch_total = torch.tensor(data.shape[1]).to(g.device)
                 if args.local:  # TODO(y): factor out (need way to see if dist was inited)
                     batch_total = batch_total.sum()
@@ -573,11 +583,6 @@ def main_loop():
                 if g.state.token_count >= args.max_tokens:
                     g.state.partial_epoch = True
                     raise StopIteration  # break out of parent train loop
-
-                if g.state.train_step % args.eval_interval == 0:
-                    evaluate_and_log(model, g.va_iter, 'val')
-                    if g.va_custom_iter:
-                        evaluate_and_log(g.state.model, g.va_custom_iter, g.args.valid_custom, generate_text=False)
 
                 if should_log:
                     elapsed_time = time.time() - log_start_time

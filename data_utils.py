@@ -245,6 +245,7 @@ class LMMultiFileIterator:
                     data.resize_(n_retain + self.bptt, data.size(1))
 
             except StopIteration:
+                g.state.mems = tuple()
                 pass
 
 
