@@ -239,6 +239,126 @@ one_p3_machine_biggit_newcheckpoint = {
     'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman_85gb.txt',
 }
 
+one_p3_machine_biggit_newcheckpoint_nodrop = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3.16xlarge',
+    'local_batch_size': 6,
+    'machines': 1,
+    'large': True,
+    'nodrop': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-87-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e6,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git_85gb',
+        'dataset': 'git',
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman_85gb.txt',
+}
+
+one_p3_machine_biggit_newcheckpoint_nodrop_p3dn = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 18,
+    'machines': 1,
+    'large': True,
+    'nodrop': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-87-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e6,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git_85gb',
+        'dataset': 'git',
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman_85gb.txt',
+}
+
+# small model, 8x p3d
+small_p3dn_8x = {
+    'base_lr': 0.001 / 16,   # add 4x lr discount because 4x machine version didn't seem to work
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 18,
+    'machines': 8,
+    'large': True,
+    'nodrop': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-87-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e6,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git_85gb',
+        'dataset': 'git',
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman_85gb.txt',
+}
+
+chimera = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 5,
+    'machines': 1,
+    'nodrop': True,
+    'huge': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-86-model.pt',
+    'checkpoint_overwrite_secondary': 'https://s3.amazonaws.com/yaroslavvb2/data/git800-86-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git',
+        'dataset': 'git',
+    }
+}
+
+chimera_no = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 5,
+    'machines': 8,
+    'nodrop': True,
+    'huge': True,
+    'checkpoint_overwrite':  'https://s3.amazonaws.com/yaroslavvb2/data/git800-86-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git_85gb',
+        'dataset': 'git',
+    }
+}
+
+one_p3_machine_biggit_newcheckpoint_nodrop_p3dn_4x = {
+    'base_lr': 0.001 / 4,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 18,
+    'machines': 4,
+    'large': True,
+    'nodrop': True,
+    'checkpoint_overwrite': 'https://s3.amazonaws.com/yaroslavvb2/data/git360-87-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+    'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 50e6,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git_85gb',
+        'dataset': 'git',
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman_85gb.txt',
+}
+
 one_small_machine_newgit_checkpoint = {
     'base_lr': 0.001 / 4,
     'instance_type': 'p3.16xlarge',
@@ -761,7 +881,12 @@ def main():
 
     if config.checkpoint_overwrite:
         downloaded_fn = util.download_from_s3(config.checkpoint_overwrite, job)
+        print(f"downloaded {downloaded_fn} from {config.checkpoint_overwrite}")
         user_params["checkpoint"] = downloaded_fn
+    if config.checkpoint_overwrite_secondary:
+        downloaded_fn = util.download_from_s3(config.checkpoint_overwrite_secondary, job)
+        print(f"downloaded secondary {downloaded_fn} from {config.checkpoint_overwrite_secondary}")
+        user_params["checkpoint_secondary"] = downloaded_fn
     if config.optimizer_overwrite:
         downloaded_fn = util.download_from_s3(config.optimizer_overwrite, job)
         user_params["optim_state_dict"] = downloaded_fn

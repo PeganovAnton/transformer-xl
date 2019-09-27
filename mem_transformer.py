@@ -442,7 +442,7 @@ class RelPartialLearnableDecoderLayer(nn.Module):
             if d_inner > 0:
                 for p in self.pos_ff.parameters():
                     p.requires_grad = False
-            print("Freezing layer")
+            # print("Freezing layer")
 
     def forward(self, dec_inp, r, r_w_bias, r_r_bias, dec_attn_mask=None, mems=None):
 
