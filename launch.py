@@ -321,7 +321,7 @@ chimera = {
 }
 
 chimera_no = {
-    'base_lr': 0.001 / 4,
+    'base_lr': 0.001 / 4 / 2,  # extra penalty of 2 because earlier run looked bad
     'instance_type': 'p3dn.24xlarge',
     'local_batch_size': 5,
     'machines': 8,
@@ -329,7 +329,7 @@ chimera_no = {
     'huge': True,
     'checkpoint_overwrite':  'https://s3.amazonaws.com/yaroslavvb2/data/git800-86-model.pt',
     'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
-    'extra_worker_params': {
+'extra_worker_params': {
         'fp16': True,
         'warmup_tokens': 50e5,
         'dynamic_loss_scale': True,
@@ -338,6 +338,49 @@ chimera_no = {
         'dataset': 'git',
     }
 }
+
+# reduce warmup 5x, standard lr again
+chimera_one = {
+    'base_lr': 0.001 / 4,  # 
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 5,
+    'machines': 1,
+    'nodrop': True,
+    'huge': True,
+    'checkpoint_overwrite':  'https://s3.amazonaws.com/yaroslavvb2/data/git800-unknown-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 10e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git_85gb',
+        'dataset': 'git',
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman_85gb.txt',
+}
+
+# 2x machines, 0.5x learning rate
+chimera_two = {
+    'base_lr': 0.001 / 4 / 2,
+    'instance_type': 'p3dn.24xlarge',
+    'local_batch_size': 5,
+    'machines': 2,
+    'nodrop': True,
+    'huge': True,
+    'checkpoint_overwrite':  'https://s3.amazonaws.com/yaroslavvb2/data/git800-unknown-model.pt',
+    'checkpoint': 'github-projects_p3dn-2d_best.pt',  # us-east-1
+'extra_worker_params': {
+        'fp16': True,
+        'warmup_tokens': 10e5,
+        'dynamic_loss_scale': True,
+        'scheduler': 'constant',
+        'data': 'data/git_85gb',
+        'dataset': 'git',
+    },
+    'valid_custom': 'https://github-lm.s3.amazonaws.com/mailman_85gb.txt',
+}
+
 
 one_p3_machine_biggit_newcheckpoint_nodrop_p3dn_4x = {
     'base_lr': 0.001 / 4,
@@ -834,6 +877,10 @@ def main():
         #'dropatt': 0.2,
         worker_params['dropout'] = 0
         worker_params['dropatt'] = 0
+
+    if config.huge:
+        worker_params['log_interval'] = 1
+        worker_params['eval_interval'] = 100
 
     user_params = {}
     # pass through some user-provided settings that were arguments to the launcher script
