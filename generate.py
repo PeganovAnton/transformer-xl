@@ -4,7 +4,6 @@ Note: only works for BPE-based models.
 Based on https://github.com/huggingface/pytorch-pretrained-BERT/blob/master/examples/run_gpt2.py
 """
 import argparse
-import os
 from typing import List
 
 import torch
@@ -17,8 +16,8 @@ from util import unwrap_model
 
 def main():
     parser = argparse.ArgumentParser(description='PyTorch Transformer Language Model')
-    parser.add_argument('--work_dir', type=str, required=True,
-                        help='path to the work_dir')
+    parser.add_argument('--model_path', type=str, required=True,
+                        help='path to the model weights checkpoint')
     parser.add_argument('--dataset', type=str, required=True,
                         help='The dataset on which the model was trained')
     parser.add_argument('--top_k', type=int, default=0,
@@ -44,7 +43,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load the best saved model.
-    with open(os.path.join(args.work_dir, 'model-best.pt'), 'rb') as f:
+    with open(args.model_path, 'rb') as f:
         model = torch.load(f, map_location='cuda' if torch.cuda.is_available() else 'cpu')
     model = unwrap_model(model)
 
@@ -69,8 +68,7 @@ def main():
 
 
 def prepare_git_context(context_file: str = None, project_files: List[str] = None) -> str:
-    PROJECT_SYMBOL = "\n龖龖龖\n"
-    FILE_SYMBOL = "\n!龖!\n"
+    from prepare_git_data import EXAMPLE_SPLIT_SYMBOL as FILE_SYMBOL
     context = FILE_SYMBOL
     if context_file:
         context += f"<<!<<{context_file}>>!>>\n{open(context_file, 'rt', encoding='utf-8', errors='ignore').read()}"
