@@ -124,6 +124,8 @@ parser.add_argument('--checkpoint_at_end', type=int, default=0,
                     help='whether to checkpoint things at the end of training')
 parser.add_argument('--checkpoint', type=str, default='',
                     help='checkpoint file to use to restore training')
+parser.add_argument('--checkpoint_secondary', type=str, default='',
+                    help='second checkpoint to restore (for hybrid model)')
 parser.add_argument('--skip_files', type=float, default=0,
                     help='how many files skip in the first epoch')
 
@@ -434,9 +436,13 @@ def main_loop():
     g.state.model.to(g.device)
     optimizer_setup(g.state)
     if args.checkpoint:
+        if args.checkpoint_secondary:
+            g.logger.info(f"restoring extra checkpoint")
+            util.restore_from_checkpoint(g.state.model, g.state.optimizer, args.checkpoint_secondary, args.optim_state_dict)
         g.logger.info(f"Restoring model from {args.checkpoint}" +
                       f" and optimizer from {args.optim_state_dict}" if args.optim_state_dict else "")
         util.restore_from_checkpoint(g.state.model, g.state.optimizer, args.checkpoint, args.optim_state_dict)
+
     else:
         g.state.model.apply(weights_init)
         # ensure embedding init is not overridden by out_layer in case of weight sharing
@@ -577,6 +583,9 @@ def main_loop():
                 g.state.train_step += 1
 
                 consumed_tokens = data.shape[0] * data.shape[1]
+                world_size = int(os.environ.get("WORLD_SIZE", "8"))
+                if world_size > 8:  # correction factor for multiple machines
+                    consumed_tokens = consumed_tokens * (world_size//8)
                 tokens_per_epoch += consumed_tokens
                 g.state.token_count += consumed_tokens
                 g.token_count = g.state.token_count
