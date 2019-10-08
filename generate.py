@@ -11,6 +11,7 @@ import torch.nn.functional as F
 import tqdm
 
 from mem_transformer import MemTransformerLM
+from prepare_git_data import prepare_project
 from util import unwrap_model
 
 
@@ -37,7 +38,6 @@ def main():
                         help='Only for git dataset. Conditional generation context')
     parser.add_argument('--context_files', type=str, default=None, nargs='+',
                         help='Only for git dataset. Rest project files')
-
 
     args = parser.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -67,12 +67,15 @@ def main():
         print(generated_text[i])
 
 
-def prepare_git_context(context_file: str = None, project_files: List[str] = None) -> str:
-    from prepare_git_data import EXAMPLE_SPLIT_SYMBOL as FILE_SYMBOL
-    context = FILE_SYMBOL
-    if context_file:
-        context += f"<<!<<{context_file}>>!>>\n{open(context_file, 'rt', encoding='utf-8', errors='ignore').read()}"
-    return context
+def prepare_git_context(current_file: str = None, project_files: List[str] = None) -> str:
+    def read_file(path):
+        with open(path, "rt", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+
+    project = ((project_file, read_file(project_file)) for project_file in project_files) if project_files else tuple()
+    current_file = (current_file, read_file(current_file)) if current_file else None
+
+    return prepare_project(project, current_file)
 
 
 def prepare_wiki_context(context: str) -> str:
@@ -171,7 +174,7 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')
         sorted_indices_to_remove[..., 0] = 0
 
         indices_to_remove = torch.zeros_like(logits, dtype=torch.uint8).scatter_(
-            dim=-1, index=sorted_indices, src=sorted_indices_to_remove )
+            dim=-1, index=sorted_indices, src=sorted_indices_to_remove)
         logits[indices_to_remove] = filter_value
     return logits
 

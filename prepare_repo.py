@@ -2,11 +2,11 @@ import glob
 import os
 import random
 from argparse import ArgumentParser
-from typing import Tuple, Generator
+from typing import Tuple, Iterable
 
 import tqdm
 
-from prepare_git_data import write_examples
+from prepare_git_data import write_file, prepare_project
 
 MIN_LENGTH = 50
 
@@ -14,7 +14,7 @@ SHUFFLE = False
 SEED = None
 
 
-def get_examples_generator(repo_path: str) -> Generator[Tuple[str, str], None, None]:
+def get_project(repo_path: str) -> Iterable[Tuple[str, str]]:
     source_file_paths = glob.glob(os.path.join(repo_path, "**/*.py"), recursive=True)
 
     if SHUFFLE:
@@ -33,8 +33,9 @@ def get_examples_generator(repo_path: str) -> Generator[Tuple[str, str], None, N
 
 
 def main(repo_path: str, result_file_path: str) -> None:
-    examples = get_examples_generator(repo_path)
-    write_examples(result_file_path, examples)
+    project = get_project(repo_path)
+    project = prepare_project(project)
+    write_file(result_file_path, project)
 
 
 if __name__ == "__main__":
