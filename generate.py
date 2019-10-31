@@ -68,7 +68,7 @@ def main():
             num_diversity_groups=args.diversity_groups,
             diversity_strength=args.diversity_strength,
         )
-        generated_text = sum([group[:3] for group in generated_text], [])
+        generated_text = sum([group[:args.num_hyps] for group in generated_text], [])
     else:
         assert False, f"function for context preparation not implemented for dataset {args.dataset}"
 
