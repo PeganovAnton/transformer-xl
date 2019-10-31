@@ -162,8 +162,7 @@ def sample_text(model, length: int, conditional_files: List[str] = None, tempera
     else:
         context = prepare_git_context(conditional_files[-1],
                                       conditional_files[:-1] if len(conditional_files) > 1 else None)
-    text = generate_text(unwrap_model(model), context, length, tokenizer=g.corpus.vocab.tokenizer,
-                         temperature=temperature, verbose=False)[0]
+    text = generate_text(unwrap_model(model), context, length, num_diversity_groups=1, tokenizer=g.corpus.vocab.tokenizer, verbose=False)[0][0]
     return context, text
 
 
