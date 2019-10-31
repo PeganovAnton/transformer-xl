@@ -1,110 +1,285 @@
-from typing import List
+from typing import List, Tuple
 
-import numpy as np
 import torch
 from torch.nn import functional as F
+import tqdm
 
 from mem_transformer import MemTransformerLM
 
 
+class Search(object):
+    """
+    Class for beam search algorithms
+    Basically user needs to feed log_probs and perform a step several times
+    Results can be found in hypotheses"""
+
+    def __init__(self, eos_ids: List[int], vocab_size: int, beam_size: int):
+        self._eos_ids = eos_ids
+        self._beam_size = beam_size
+        self._vocab_size = vocab_size
+
+    def step(self, log_probs: torch.Tensor) -> torch.Tensor:
+        """Take a single search step.
+
+        Args:
+            log_probs: (batch_size, vocab_size)
+                the model's log-probabilities over the vocabulary at the current step
+
+        Return:
+            beams: (batch_size,)
+                the hypothesis ids of the chosen elements, in the range [0, batch_size)
+        """
+        raise NotImplementedError
+
+    def _step_check(self, log_probs: torch.Tensor):
+        assert log_probs.size() == (
+            self.batch_size,
+            self._vocab_size,
+        ), f"log_probs must have shape {(self.batch_size, self._vocab_size)}, but {log_probs.size()} was given"
+
+        assert all(
+            eos < self._vocab_size for eos in self._eos_ids
+        ), f"EOS ids must be less than vocab_size, but EOS ids: {self._eos_ids} and vocab_size: {self._vocab_size}"
+
+    @property
+    def hypotheses(self) -> List[Tuple[torch.Tensor, float]]:
+        """List of tuples of terminated hypotheses and theirs scores"""
+        raise NotImplementedError
+
+    @property
+    def last_predictions(self) -> torch.Tensor:
+        """Tensor of last tokens of the current hypotheses with shape (batch_size,) to make a batch for a model"""
+        raise NotImplementedError
+
+    @property
+    def batch_size(self) -> int:
+        """Current batch size"""
+        raise NotImplementedError
+
+
+class BeamSearch(Search):
+    """Beam search algorithm with normalized by length scores"""
+
+    def __init__(self, eos_ids: List[int], vocab_size: int, beam_size: int):
+        super().__init__(eos_ids, vocab_size, beam_size)
+
+        self._length = 1.0
+        self._scores = None
+        self._hypotheses = None
+        self._terminated_hypotheses = []
+        self._sort_mask = None
+
+    def _init_state(self, dtype: torch.dtype, device: torch.device):
+        self._device = device
+        self._scores = torch.zeros(1, dtype=dtype, device=device)
+        self._hypotheses = torch.empty(1, 0, dtype=torch.long, device=device)
+
+    def step(self, log_probs: torch.Tensor) -> torch.Tensor:
+        """Take a single search step.
+
+        Args:
+            log_probs: (batch_size, vocab_size)
+                the model's log-probabilities over the vocabulary at the current step
+
+        Return:
+            beams: (batch_size,)
+                the hypothesis ids of the chosen elements, in the range [0, batch_size)
+        """
+        super()._step_check(log_probs)
+        if self._scores is None:
+            assert self._hypotheses is None
+            self._init_state(log_probs.dtype, log_probs.device)
+
+        log_probs.add_(self._scores.unsqueeze(1))
+        sample_scores, samples = torch.topk(log_probs.flatten(), 2 * self._beam_size, sorted=False)
+
+        sort_mask = torch.div(samples, self._vocab_size)
+        samples.fmod_(self._vocab_size)
+
+        self._init_sort_mask()
+        self._update_state(samples, sample_scores, sort_mask)
+        self._length += 1
+
+        return self._sort_mask
+
+    @property
+    def hypotheses(self) -> List[Tuple[torch.Tensor, float]]:
+        """List of tuples of terminated hypotheses and theirs scores"""
+        self._terminated_hypotheses = sorted(self._terminated_hypotheses, key=lambda x: x[1], reverse=True)
+        return self._terminated_hypotheses
+
+    @property
+    def last_predictions(self) -> torch.Tensor:
+        """Tensor of last tokens of the current hypotheses with shape (batch_size,) to make a batch for a model"""
+        assert (
+                self._hypotheses is not None and self._hypotheses.size(1) > 0
+        ), f"Can't get last predictions if no steps have been performed"
+        return self._hypotheses[:, -1]
+
+    @property
+    def batch_size(self) -> int:
+        """Current batch size"""
+        if self._scores is None:
+            return 1
+        return self._scores.size(0)
+
+    def _init_sort_mask(self):
+        self._sort_mask = torch.arange(self.batch_size)
+
+    def _update_state(self, samples: torch.Tensor, sample_scores: torch.Tensor, sort_mask: torch.Tensor):
+        self._sort_state(sort_mask)
+
+        self._scores = sample_scores
+        self._hypotheses = torch.cat((self._hypotheses, samples.unsqueeze(1)), dim=1)
+        self._stash_terminated(samples)
+
+    def _stash_terminated(self, samples: torch.Tensor):
+        is_terminated = torch.zeros(self.batch_size, dtype=torch.uint8, device=self._device)
+        for eos in self._eos_ids:
+            is_terminated |= samples == eos
+
+        scores = self._scores / self._length
+        for terminated_hypothesis, score in zip(self._hypotheses[is_terminated], scores[is_terminated]):
+            assert len(terminated_hypothesis) == int(self._length)
+            self._terminated_hypotheses.append((terminated_hypothesis.clone(), score.item()))
+
+        self._apply_slice_to_state(~is_terminated)
+        self._sort_state()
+
+    def _sort_state(self, sort_mask: torch.Tensor = None):
+        if sort_mask is None:
+            _, sort_mask = torch.topk(self._scores, self._beam_size)
+        self._apply_slice_to_state(sort_mask)
+
+    def _apply_slice_to_state(self, tensor_slice):
+        self._scores = self._scores[tensor_slice]
+        self._hypotheses = self._hypotheses[tensor_slice]
+        if self._sort_mask is not None:
+            self._sort_mask = self._sort_mask[tensor_slice]
+
+
+class DiverseBeamSearch(Search):
+    """Beam search with diverse Hamming reward"""
+
+    def __init__(self, eos_ids: List[int], vocab_size: int, beam_size: int, num_groups: int, diversity_strength: float):
+        super().__init__(eos_ids, vocab_size, beam_size)
+
+        self._num_groups = num_groups
+        self._diversity_strength = -diversity_strength
+        self._diversity_reward = None
+
+        self._beams = [BeamSearch(eos_ids, vocab_size, beam_size) for _ in range(num_groups)]
+
+    def _init_diversity_reward(self, dtype: torch.dtype, device: torch.device):
+        if self._diversity_reward is None:
+            self._diversity_reward = torch.zeros(1, self._vocab_size, dtype=dtype, device=device)
+        else:
+            self._diversity_reward[:] = 0.0
+
+    def step(self, log_probs: torch.Tensor, additional_scores: torch.Tensor = None) -> torch.Tensor:
+        """Take a single search step.
+
+        Args:
+            log_probs: (batch_size, vocab_size)
+                the model's log-probabilities over the vocabulary at the current step
+            additional_scores: (batch_size, vocab_size)
+                additional reward over the vocabulary, that will not include in the hypotheses scores
+
+        Return:
+            beams: (batch_size,)
+                the hypothesis ids of the chosen elements, in the range [0, batch_size)
+        """
+        super()._step_check(log_probs)
+        self._init_diversity_reward(log_probs.dtype, log_probs.device)
+
+        offset = 0
+        beams_sort = []
+        for beam in self._beams:
+            old_batch_size = beam.batch_size
+
+            cur_log_probs = log_probs[offset: offset + old_batch_size]
+            cur_beams_sort = beam.step(cur_log_probs)
+            beams_sort.append(cur_beams_sort + offset)
+
+            # update diversity penalty
+            self._diversity_reward.scatter_add_(
+                1, beam.last_predictions.unsqueeze(0), self._diversity_reward.new_ones(1, beam.batch_size)
+            )
+            log_probs = torch.add(log_probs, self._diversity_strength, self._diversity_reward)
+
+            offset += old_batch_size
+
+        return torch.cat(beams_sort)
+
+    @property
+    def hypotheses(self) -> List[List[Tuple[torch.Tensor, float]]]:
+        """List of groups of hypotheses, where group is a list of tuples of terminated hypotheses and theirs scores"""
+        return [beam.hypotheses for beam in self._beams]
+
+    @property
+    def last_predictions(self) -> torch.Tensor:
+        """Tensor of last tokens of the current hypotheses with shape (batch_size,) to make a batch for a model"""
+        return torch.cat([beam.last_predictions for beam in self._beams])
+
+    @property
+    def batch_size(self) -> int:
+        """Current batch size"""
+        return sum(beam.batch_size for beam in self._beams)
+
+
 def beam_search(
-        *, model: MemTransformerLM, terminal_id: int, beam_size: int, mems: List[torch.Tensor], data: torch.Tensor
-) -> List[torch.Tensor]:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        *,
+        model: MemTransformerLM,
+        mems: List[torch.Tensor],
+        log_probs: torch.Tensor,
+        num_iterations: int,
+        beam_size: int,
+        terminal_id: List[int],
+        num_groups: int,
+        diversity_strength: float,
+        verbose: bool = True,
+) -> List[List[Tuple[torch.Tensor, float]]]:
+    """
+    :param model: trained MemTransformerLM model
+    :param mems: MemTransformerLM memory with context
+    :param log_probs: log probabilities just after context feeding
+    :param num_iterations: how many iterations should perform
+    :param beam_size: beam width, num performing hypotheses in each group
+    :param terminal_id: list of tokens, on which hypotheses will terminate
+    :param num_groups: num diversity groups
+    :param diversity_strength: how strong will be penalty for same tokens between groups
+    :param verbose: whether to show progress bar
+
+    :returns list of diversity groups, where group is list of hypotheses and their scores
+    """
 
     assert (
-            data.ndimension() == 2
-    ), f"Data must have two dimensions (#tokens, batch_size), actual dimensions are {data.size()}"
-    assert data.size(1) == 1, f"Batch size must be 1, but {data.size(1)} was given"
+            log_probs.ndimension() == 2 and log_probs.size(0) == 1
+    ), f"log_probs must have shape (1, vocab_size), but {log_probs.size()} was given"
+
     for mem in mems:
         assert mem.size(1) == 1, f"You must provide mems only for 1 example, but {mem.size(1)} was given"
 
-    # Index of hypothesis start in the data tensor
-    hyp_ind = data.size(0)
+    search = DiverseBeamSearch(
+        eos_ids=terminal_id,
+        vocab_size=log_probs.size(1),
+        beam_size=beam_size,
+        num_groups=num_groups,
+        diversity_strength=diversity_strength,
+    )
+    log_probs = log_probs.repeat_interleave(search.batch_size, dim=0)
+    mems = [mem.repeat_interleave(search.batch_size, dim=1) for mem in mems]
 
-    # First dimension for hypotheses
-    # (#tokens, 1) -> (1, #tokens)
-    data = data.squeeze(-1).unsqueeze(0)
-    # (mem_len, 1, hidden_size) -> (1, mem_len, hidden_size)
-    mems = [mem.transpose(0, 1) for mem in mems]
+    for _ in tqdm.trange(num_iterations, disable=not verbose):
+        selected_inds = search.step(log_probs)
 
-    lengths = torch.zeros(1, dtype=torch.int16, device=device)
-    is_terminated_mask = torch.zeros(1, dtype=torch.uint8, device=device)
-    log_probs = torch.zeros(1, dtype=torch.float16, device=device)
+        data = search.last_predictions.unsqueeze(0)
+        mems = [mem[:, selected_inds, :] for mem in mems]
 
-    while True:
-        # data[:, -1]: (batch_size,) -> (1, batch_size)
-        # mems: (batch_size, mem_len, hidden_size) -> (mem_len, batch_size, hidden_size)
-        predicted_hiddens, mems = predict(model, data[:, -1].unsqueeze(0), [mem.transpose(0, 1) for mem in mems])
+        predicted_hiddens, mems = predict(model, data, mems)
+        log_probs = hidden_to_softmax(model, predicted_hiddens.squeeze(0), log=True)
 
-        # (mem_len, batch_size, hidden_size) -> (batch_size, mem_len, hidden_size)
-        mems = [mem.transpose(0, 1) for mem in mems]
-
-        log_softmax = hidden_to_softmax(model, predicted_hiddens.squeeze(0), log=True)
-
-        (data, lengths, is_terminated_mask, log_probs), new_log_probs, new_samples = _expand_hypotheses(
-            data, lengths, is_terminated_mask, log_probs, softmax=log_softmax, beam_size=beam_size
-        )
-        mems = _expand_hypotheses(*mems, beam_size=beam_size)
-
-        # Update log_probs
-        log_probs += new_log_probs
-
-        # Update is_terminated_mask
-        is_terminated_mask |= new_samples == terminal_id
-
-        # Update lengths
-        lengths += (1 - is_terminated_mask).to(torch.int16)
-
-        # Update data
-        data = torch.cat((data, new_samples.unsqueeze(1)), dim=1)
-
-        scores = _score_hypotheses(log_probs, lengths, data[:, hyp_ind:], is_terminated_mask, alpha=0.8)
-
-        data, lengths, is_terminated_mask, log_probs = _get_best_hypotheses(
-            data, lengths, is_terminated_mask, log_probs, scores=scores, beam_size=beam_size
-        )
-        mems = _get_best_hypotheses(*mems, scores=scores, beam_size=beam_size)
-
-        if is_terminated_mask.all():
-            break
-
-    return [hyp[hyp_ind: hyp_ind + length] for hyp, length in zip(data, lengths)]
-
-
-def _score_hypotheses(
-        log_probs: torch.Tensor,
-        lengths: torch.Tensor,
-        hypotheses: torch.Tensor,
-        is_terminated_mask: torch.Tensor,
-        alpha: float = 0,
-) -> torch.Tensor:
-    assert log_probs.ndimension() == 1, ""
-    assert lengths.ndimension() == 1, ""
-    assert hypotheses.ndimension() == 2, ""
-    assert is_terminated_mask.ndimension() == 1, ""
-
-    # TODO: Add diversity reward calculation
-    reward = 0
-
-    scores = log_probs.to(torch.float64) / (lengths.to(torch.float64) + 1e-6) + alpha * reward
-    return scores
-
-
-def _get_best_hypotheses(*tensors: torch.Tensor, scores: torch.Tensor, beam_size: int):
-    _, top_mask = torch.topk(scores, beam_size)
-    return tuple(tensor[top_mask] for tensor in tensors)
-
-
-def _expand_hypotheses(*tensors: torch.Tensor, beam_size: int, softmax: torch.Tensor = None):
-    repeat_index = torch.tensor(np.repeat(np.arange(tensors[0].size(0)), beam_size))
-    repeated_tensors = tuple(tensor[repeat_index] for tensor in tensors)
-    if softmax is not None:
-        probs, samples = torch.topk(softmax, beam_size, sorted=False)
-        # (batch_size, beam_size) -> (batch_size * beam_size,)
-        probs, samples = probs.flatten(), samples.flatten()
-        return repeated_tensors, probs, samples
-    return repeated_tensors
+    return search.hypotheses
 
 
 def predict(model, data, mems):
@@ -123,7 +298,7 @@ def hidden_to_softmax(model, hidden, temperature=1.0, top_k=0, top_p=0.0, log=Fa
     # pas stands for ProjectedAdaptiveSoftmax
     pas = model.crit
     logits = pas._compute_logit(hidden, pas.out_layers[0].weight, pas.out_layers[0].bias, pas.out_projs[0])
-    logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+    logits = _top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
 
     logits /= temperature
     if log:
@@ -132,7 +307,7 @@ def hidden_to_softmax(model, hidden, temperature=1.0, top_k=0, top_p=0.0, log=Fa
         return F.softmax(logits, dim=-1)
 
 
-def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float("Inf")):
+def _top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float("Inf")):
     """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
 
     https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317

@@ -9,7 +9,7 @@ from typing import List
 import torch
 import tqdm
 
-from beam_search import beam_search, predict
+from beam_search import predict, hidden_to_softmax, beam_search
 from mem_transformer import MemTransformerLM
 from prepare_git_data import prepare_project
 from util import unwrap_model
@@ -19,15 +19,20 @@ def main():
     parser = argparse.ArgumentParser(description="PyTorch Transformer Language Model")
     parser.add_argument("--model_path", type=str, required=True, help="path to the model weights checkpoint")
     parser.add_argument("--dataset", type=str, required=True, help="The dataset on which the model was trained")
+    parser.add_argument("--batch_len", type=int, default=384)
+    # wiki arguments
     parser.add_argument("--top_k", type=int, default=0, help="Limit sampling to top K probabilities. If 0, use all.")
     parser.add_argument("--top_p", type=float, default=0, help="Limit sampling to p nucleus sampling. If 0, use all.")
     parser.add_argument("--length", type=int, default=200, help="what sequence length to generate")
     parser.add_argument("--batch_size", type=int, default=10)
-    parser.add_argument("--batch_len", type=int, default=384)
     parser.add_argument("--temperature", type=float, default=1.0)
-    # Only for wiki dataset
     parser.add_argument("--context", type=str, default="", help="Conditional generation context")
-    # Only for git dataset
+    # git arguments
+    parser.add_argument("--num_iterations", type=int, default=50)
+    parser.add_argument("--beam_width", type=int, default=5)
+    parser.add_argument("--num_hyps", type=int, default=3, help="How many hypotheses from each group we should leave")
+    parser.add_argument("--diversity_groups", type=int, default=5)
+    parser.add_argument("--diversity_strength", type=float, default=0.3)
     parser.add_argument(
         "--cur_file", type=str, default=None, help="Only for git dataset. Conditional generation context"
     )
@@ -38,7 +43,6 @@ def main():
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load the best saved model.
     with open(args.model_path, "rb") as f:
         model = torch.load(f, map_location="cuda" if torch.cuda.is_available() else "cpu")
     model = unwrap_model(model)
@@ -50,14 +54,23 @@ def main():
 
     if args.dataset == "wiki":
         context = prepare_wiki_context(args.context)
+        generated_text = generate_text(
+            model, context, args.length, args.batch_size, args.temperature, args.top_k, args.top_p, args.batch_len
+        )
     elif args.dataset == "git":
         context = prepare_git_context(args.cur_file, args.context_files)
+        generated_text = generate_text(
+            model,
+            context,
+            num_iterations=args.num_iterations,
+            batch_len=args.batch_len,
+            beam_width=args.beam_width,
+            num_diversity_groups=args.diversity_groups,
+            diversity_strength=args.diversity_strength,
+        )
+        generated_text = sum([group[:3] for group in generated_text], [])
     else:
         assert False, f"function for context preparation not implemented for dataset {args.dataset}"
-
-    generated_text = generate_text(
-        model, context, args.length, args.batch_size, args.temperature, args.top_k, args.top_p, args.batch_len
-    )
 
     for i in range(len(generated_text)):
         print("=" * 40, "sample", i + 1, "=" * 40)
@@ -83,23 +96,24 @@ def prepare_wiki_context(context: str) -> str:
 def generate_text(
         model: MemTransformerLM,
         context: str,
-        length: int,
-        num_examples: int = 5,
-        temperature: float = 1.0,
-        top_k: int = 0,
-        top_p: float = 0.0,
+        num_iterations: int,
         batch_len: int = 384,
+        beam_width: int = 5,
+        num_diversity_groups: int = 5,
+        diversity_strength: float = 0.3,
         tokenizer=None,
         verbose=True,
-) -> List[str]:
+) -> List[List[str]]:
     model.eval()
+
     if not tokenizer:
         from pytorch_pretrained_bert import GPT2Tokenizer
+
         tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+
     context = tokenizer.encode(context)
     terminal_id = tokenizer.encode("\n")
     assert len(terminal_id) == 1
-    terminal_id = terminal_id[0]
 
     with torch.no_grad():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -107,30 +121,31 @@ def generate_text(
         # Turn into a batch.
         data = data.unsqueeze(1)
 
-        # Init mems with context, except for the last token
-        context_batches = torch.split(data[:-1], batch_len, dim=0)
+        # Init mems with context
+        context_batches = torch.split(data, batch_len, dim=0)
         mems = model.init_mems()
         if verbose:
             print("Prepare context for text generating...")
         for batch in tqdm.tqdm(context_batches, disable=not verbose):
-            _, mems = predict(model, batch, mems)
+            hiddens, mems = predict(model, batch, mems)
+
+        # Get the last log_probs for the first beam search iteration
+        log_probs = hidden_to_softmax(model, hiddens[-1], log=True)
 
         # Generate text
         if verbose:
             print("Performing beam search...")
-        results = beam_search(model=model, terminal_id=terminal_id, beam_size=num_examples, mems=mems, data=data)
-    #     for _ in tqdm.trange(length, disable=not verbose):
-    #         # Grab a sample from the last frame, append to result list, append to `data`
-    #         pred_hid, mems = predict(model, data[-1:], mems)
-    #         softmax = hidden_to_softmax(model, pred_hid.squeeze(0), temperature=temperature)
-    #         new_sample = torch.multinomial(softmax, num_samples=1)
-    #         data = torch.cat((data, new_sample.t()), dim=0)
-    #
-    # results = []
-    # for i in range(data.size(1)):
-    #     results.append(tokenizer.decode(data[len(context):, i].tolist()))
-
-    return [tokenizer.decode(result.tolist()) for result in results]
+        results = beam_search(
+            model=model,
+            mems=mems,
+            log_probs=log_probs,
+            num_iterations=num_iterations,
+            beam_size=beam_width,
+            terminal_id=terminal_id,
+            num_groups=num_diversity_groups,
+            diversity_strength=diversity_strength,
+        )
+    return [[tokenizer.decode(hypothesis.tolist()) for hypothesis, score in group] for group in results]
 
 
 if __name__ == "__main__":
