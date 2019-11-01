@@ -22,7 +22,7 @@ import tqdm
 import globals as g  # global state current run, shared between modules
 from data_utils import get_lm_corpus
 from generate import generate_text, prepare_git_context
-from beam_search import hidden_to_softmax
+from search import hidden_to_softmax
 from util import unwrap_model
 from utils.exp_utils import get_logger
 

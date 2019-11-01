@@ -1,21 +1,21 @@
 from typing import List, Tuple
 
 import torch
-from torch.nn import functional as F
 import tqdm
+from torch.nn import functional as F
 
 from mem_transformer import MemTransformerLM
 
 
 class Search(object):
     """
-    Class for beam search algorithms
+    Class for search algorithms
     Basically user needs to feed log_probs and perform a step several times
     Results can be found in hypotheses"""
 
-    def __init__(self, eos_ids: List[int], vocab_size: int, beam_size: int):
+    def __init__(self, eos_ids: List[int], vocab_size: int, search_size: int):
         self._eos_ids = eos_ids
-        self._beam_size = beam_size
+        self._search_size = search_size
         self._vocab_size = vocab_size
 
     def step(self, log_probs: torch.Tensor) -> torch.Tensor:
@@ -42,8 +42,8 @@ class Search(object):
         ), f"EOS ids must be less than vocab_size, but EOS ids: {self._eos_ids} and vocab_size: {self._vocab_size}"
 
     @property
-    def hypotheses(self) -> List[Tuple[torch.Tensor, float]]:
-        """List of tuples of terminated hypotheses and theirs scores"""
+    def hypotheses(self) -> List[List[Tuple[torch.Tensor, float]]]:
+        """List of list of tuples of terminated hypotheses and theirs scores"""
         raise NotImplementedError
 
     @property
@@ -91,7 +91,7 @@ class BeamSearch(Search):
             self._init_state(log_probs.dtype, log_probs.device)
 
         log_probs.add_(self._scores.unsqueeze(1))
-        sample_scores, samples = torch.topk(log_probs.flatten(), 2 * self._beam_size, sorted=False)
+        sample_scores, samples = torch.topk(log_probs.flatten(), 2 * self._search_size, sorted=False)
 
         sort_mask = torch.div(samples, self._vocab_size)
         samples.fmod_(self._vocab_size)
@@ -103,10 +103,10 @@ class BeamSearch(Search):
         return self._sort_mask
 
     @property
-    def hypotheses(self) -> List[Tuple[torch.Tensor, float]]:
+    def hypotheses(self) -> List[List[Tuple[torch.Tensor, float]]]:
         """List of tuples of terminated hypotheses and theirs scores"""
         self._terminated_hypotheses = sorted(self._terminated_hypotheses, key=lambda x: x[1], reverse=True)
-        return self._terminated_hypotheses
+        return [self._terminated_hypotheses]
 
     @property
     def last_predictions(self) -> torch.Tensor:
@@ -148,7 +148,7 @@ class BeamSearch(Search):
 
     def _sort_state(self, sort_mask: torch.Tensor = None):
         if sort_mask is None:
-            _, sort_mask = torch.topk(self._scores, self._beam_size)
+            _, sort_mask = torch.topk(self._scores, self._search_size)
         self._apply_slice_to_state(sort_mask)
 
     def _apply_slice_to_state(self, tensor_slice):
@@ -161,14 +161,16 @@ class BeamSearch(Search):
 class DiverseBeamSearch(Search):
     """Beam search with diverse Hamming reward"""
 
-    def __init__(self, eos_ids: List[int], vocab_size: int, beam_size: int, num_groups: int, diversity_strength: float):
-        super().__init__(eos_ids, vocab_size, beam_size)
+    def __init__(
+            self, eos_ids: List[int], vocab_size: int, search_size: int, num_groups: int, diversity_strength: float
+    ):
+        super().__init__(eos_ids, vocab_size, search_size)
 
         self._num_groups = num_groups
         self._diversity_strength = -diversity_strength
         self._diversity_reward = None
 
-        self._beams = [BeamSearch(eos_ids, vocab_size, beam_size) for _ in range(num_groups)]
+        self._beams = [BeamSearch(eos_ids, vocab_size, search_size) for _ in range(num_groups)]
 
     def _init_diversity_reward(self, dtype: torch.dtype, device: torch.device):
         if self._diversity_reward is None:
@@ -214,7 +216,7 @@ class DiverseBeamSearch(Search):
     @property
     def hypotheses(self) -> List[List[Tuple[torch.Tensor, float]]]:
         """List of groups of hypotheses, where group is a list of tuples of terminated hypotheses and theirs scores"""
-        return [beam.hypotheses for beam in self._beams]
+        return [beam.hypotheses[0] for beam in self._beams]
 
     @property
     def last_predictions(self) -> torch.Tensor:
@@ -227,28 +229,28 @@ class DiverseBeamSearch(Search):
         return sum(beam.batch_size for beam in self._beams)
 
 
-def beam_search(
+def search(
         *,
         model: MemTransformerLM,
         mems: List[torch.Tensor],
         log_probs: torch.Tensor,
         num_iterations: int,
-        beam_size: int,
         terminal_id: List[int],
+        verbose: bool = True,
+        beam_size: int,
         num_groups: int,
         diversity_strength: float,
-        verbose: bool = True,
 ) -> List[List[Tuple[torch.Tensor, float]]]:
     """
     :param model: trained MemTransformerLM model
     :param mems: MemTransformerLM memory with context
     :param log_probs: log probabilities just after context feeding
     :param num_iterations: how many iterations should perform
-    :param beam_size: beam width, num performing hypotheses in each group
     :param terminal_id: list of tokens, on which hypotheses will terminate
+    :param verbose: whether to show progress bar
+    :param beam_size: beam width, num performing hypotheses in each group
     :param num_groups: num diversity groups
     :param diversity_strength: how strong will be penalty for same tokens between groups
-    :param verbose: whether to show progress bar
 
     :returns list of diversity groups, where group is list of hypotheses and their scores
     """
@@ -260,13 +262,19 @@ def beam_search(
     for mem in mems:
         assert mem.size(1) == 1, f"You must provide mems only for 1 example, but {mem.size(1)} was given"
 
-    search = DiverseBeamSearch(
-        eos_ids=terminal_id,
-        vocab_size=log_probs.size(1),
-        beam_size=beam_size,
-        num_groups=num_groups,
-        diversity_strength=diversity_strength,
-    )
+    if num_groups > 1:
+        print("Using Diverse search")
+        search = DiverseBeamSearch(
+            eos_ids=terminal_id,
+            vocab_size=log_probs.size(1),
+            search_size=beam_size,
+            num_groups=num_groups,
+            diversity_strength=diversity_strength,
+        )
+    else:
+        print("Using Beam search")
+        search = BeamSearch(terminal_id, log_probs.size(1), beam_size)
+
     log_probs = log_probs.repeat_interleave(search.batch_size, dim=0)
     mems = [mem.repeat_interleave(search.batch_size, dim=1) for mem in mems]
 
