@@ -105,8 +105,9 @@ class BeamSearch(Search):
     @property
     def hypotheses(self) -> List[List[Tuple[torch.Tensor, float]]]:
         """List of tuples of terminated hypotheses and theirs scores"""
-        self._terminated_hypotheses = sorted(self._terminated_hypotheses, key=lambda x: x[1], reverse=True)
-        return [self._terminated_hypotheses]
+        hypotheses = [(hyp, score) for hyp, score in zip(self._hypotheses, self._scores / self._length)]
+        hypotheses += self._terminated_hypotheses
+        return [sorted(hypotheses, key=lambda x: x[1], reverse=True)]
 
     @property
     def last_predictions(self) -> torch.Tensor:
