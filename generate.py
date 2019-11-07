@@ -112,8 +112,8 @@ def generate_text(
         tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
 
     context = tokenizer.encode(context)
-    terminal_id = tokenizer.encode("\n")
-    assert len(terminal_id) == 1
+    # All tokens that contain '\n'
+    terminal_id = [198, 628, 44320]
 
     with torch.no_grad():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
