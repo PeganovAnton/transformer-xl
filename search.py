@@ -177,7 +177,13 @@ class DiverseBeamSearch(Search):
     """Beam search with diverse Hamming reward"""
 
     def __init__(
-            self, eos_ids: List[int], vocab_size: int, search_size: int, num_groups: int, diversity_strength: float
+            self,
+            eos_ids: List[int],
+            vocab_size: int,
+            search_size: int,
+            search_type: Type[Search],
+            num_groups: int,
+            diversity_strength: float,
     ):
         super().__init__(eos_ids, vocab_size, search_size)
 
@@ -185,7 +191,7 @@ class DiverseBeamSearch(Search):
         self._diversity_strength = -diversity_strength
         self._diversity_reward = None
 
-        self._beams = [BeamSearch(eos_ids, vocab_size, search_size) for _ in range(num_groups)]
+        self._searches = [search_type(eos_ids, vocab_size, search_size) for _ in range(num_groups)]
 
     def _init_diversity_reward(self, dtype: torch.dtype, device: torch.device):
         if self._diversity_reward is None:
@@ -211,7 +217,7 @@ class DiverseBeamSearch(Search):
 
         offset = 0
         beams_sort = []
-        for beam in self._beams:
+        for beam in self._searches:
             old_batch_size = beam.batch_size
 
             cur_log_probs = log_probs[offset: offset + old_batch_size]
@@ -231,20 +237,72 @@ class DiverseBeamSearch(Search):
     @property
     def hypotheses(self) -> List[List[Tuple[torch.Tensor, float]]]:
         """List of groups of hypotheses, where group is a list of tuples of terminated hypotheses and theirs scores"""
-        return [beam.hypotheses[0] for beam in self._beams]
+        return [beam.hypotheses[0] for beam in self._searches]
 
     @property
     def last_predictions(self) -> torch.Tensor:
         """Tensor of last tokens of the current hypotheses with shape (batch_size,) to make a batch for a model"""
-        return torch.cat([beam.last_predictions for beam in self._beams])
+        return torch.cat([beam.last_predictions for beam in self._searches])
 
     @property
     def batch_size(self) -> int:
         """Current batch size"""
-        return sum(beam.batch_size for beam in self._beams)
+        return sum(beam.batch_size for beam in self._searches)
 
 
-def search(
+class ViterbiSearch(BeamSearch):
+    def __init__(self, eos_ids: List[int], vocab_size: int, search_size: int):
+        super().__init__(eos_ids, vocab_size, vocab_size)
+        self._eos_ids = torch.tensor(eos_ids, dtype=torch.long)
+
+    def _init_state(self, dtype: torch.dtype, device: torch.device):
+        self._device = device
+        self._scores = torch.zeros(1, dtype=dtype, device=device)
+        self._hypotheses = torch.empty(1, 0, dtype=torch.long, device=device)
+
+    def step(self, log_probs: torch.Tensor) -> torch.Tensor:
+        """Take a single search step.
+
+        Args:
+            log_probs: (batch_size, vocab_size)
+                the model's log-probabilities over the vocabulary at the current step
+
+        Return:
+            beams: (batch_size,)
+                the hypothesis ids of the chosen elements, in the range [0, batch_size)
+        """
+        super()._step_check(log_probs)
+        if self._scores is None:
+            assert self._hypotheses is None
+            self._init_state(log_probs.dtype, log_probs.device)
+
+        log_probs.add_(self._scores.unsqueeze(1))
+        sample_scores, sort_mask = torch.max(log_probs, dim=0)
+        samples = torch.arange(log_probs.size(1), device=self._device)
+
+        # sort_mask = torch.div(samples, self._vocab_size)
+        # samples.fmod_(self._vocab_size)
+
+        self._init_sort_mask()
+        self._update_state(samples, sample_scores, sort_mask)
+        self._length += 1
+
+        return self._sort_mask
+
+    def _stash_terminated(self, samples: torch.Tensor):
+        is_terminated = torch.zeros(self.batch_size, dtype=torch.uint8, device=self._device)
+        is_terminated[self._eos_ids] = 1
+
+        scores = self._scores / self._length
+        for terminated_hypothesis, score in zip(self._hypotheses[is_terminated], scores[is_terminated]):
+            assert len(terminated_hypothesis) == int(self._length)
+            self._terminated_hypotheses.append((terminated_hypothesis.clone(), score.item()))
+
+        self._apply_slice_to_state(~is_terminated)
+        # self._sort_state()
+
+
+def perform_search(
         *,
         model: MemTransformerLM,
         mems: List[torch.Tensor],
@@ -255,6 +313,7 @@ def search(
         beam_size: int,
         num_groups: int,
         diversity_strength: float,
+        search_type: str,
 ) -> List[List[Tuple[torch.Tensor, float]]]:
     """
     :param model: trained MemTransformerLM model
@@ -266,6 +325,7 @@ def search(
     :param beam_size: beam width, num performing hypotheses in each group
     :param num_groups: num diversity groups
     :param diversity_strength: how strong will be penalty for same tokens between groups
+    :param search_type: which search type to use "beam_search" or "viterbi"
 
     :returns list of diversity groups, where group is list of hypotheses and their scores
     """
@@ -277,19 +337,29 @@ def search(
     for mem in mems:
         assert mem.size(1) == 1, f"You must provide mems only for 1 example, but {mem.size(1)} was given"
 
+    if search_type == "beam_search":
+        print("Using Beam search")
+        search_type = BeamSearch
+    elif search_type == "viterbi":
+        print("Using Viterbi search")
+        search_type = ViterbiSearch
+        model.to(device=torch.device("cpu"), dtype=torch.float32)
+        log_probs.to(device=torch.device("cpu"), dtype=torch.float32)
+        mems = [mem.to(device=torch.device("cpu"), dtype=torch.float32) for mem in mems]
     if num_groups > 1:
         print("Using Diverse search")
         search = DiverseBeamSearch(
             eos_ids=terminal_id,
             vocab_size=log_probs.size(1),
             search_size=beam_size,
+            search_type=search_type,
             num_groups=num_groups,
             diversity_strength=diversity_strength,
         )
     else:
-        print("Using Beam search")
-        search = BeamSearch(terminal_id, log_probs.size(1), beam_size)
+        search = search_type(terminal_id, log_probs.size(1), beam_size)
 
+    # expand batch
     log_probs = log_probs.repeat_interleave(search.batch_size, dim=0)
     mems = [mem.repeat_interleave(search.batch_size, dim=1) for mem in mems]
 
