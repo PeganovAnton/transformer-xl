@@ -8,10 +8,11 @@ from typing import List
 
 import torch
 import tqdm
+from transformers import GPT2Tokenizer
 
 from mem_transformer import MemTransformerLM
 from prepare_git_data import prepare_project
-from search import predict, hidden_to_softmax, search
+from search import predict, hidden_to_softmax, perform_search
 from util import unwrap_model
 
 
@@ -44,7 +45,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     with open(args.model_path, "rb") as f:
-        model = torch.load(f, map_location="cuda" if torch.cuda.is_available() else "cpu")
+        model = torch.load(f, map_location=device)
     model = unwrap_model(model)
 
     if not torch.cuda.is_available():
@@ -101,19 +102,21 @@ def generate_text(
         beam_size: int = 5,
         num_diversity_groups: int = 5,
         diversity_strength: float = 0.3,
-        tokenizer=None,
-        verbose=True,
+        tokenizer: GPT2Tokenizer = None,
+        terminating_symbols: List[str] = None,
+        verbose: bool = True,
 ) -> List[List[str]]:
     model.eval()
 
     if not tokenizer:
-        from pytorch_pretrained_bert import GPT2Tokenizer
-
         tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
 
     context = tokenizer.encode(context)
-    # All tokens that contain '\n'
-    terminal_id = [198, 628, 44320]
+
+    if terminating_symbols is None:
+        # Use '\n' as default
+        terminating_symbols = ['\n', '(', ')', '[', ']', ':', '->', ',', '.']
+    terminal_ids = get_ids_with_symbols(terminating_symbols, tokenizer)
 
     with torch.no_grad():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -146,6 +149,18 @@ def generate_text(
             diversity_strength=diversity_strength,
         )
     return [[tokenizer.decode(hypothesis.tolist()) for hypothesis, score in group] for group in results]
+
+
+def get_ids_with_symbols(symbols: List[str], tokenizer: GPT2Tokenizer) -> List[int]:
+    def convert_token_to_string(token):
+        # Code this because old versions of HF's tokenizers don't support it
+        return bytearray([tokenizer.byte_decoder[c] for c in token]).decode('utf-8', errors="ignore")
+
+    result = []
+    for token, token_id in tokenizer.encoder.items():
+        if any(symbol in convert_token_to_string(token) for symbol in symbols):
+            result.append(token_id)
+    return result
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Type
 
 import torch
 import tqdm
@@ -68,11 +68,13 @@ class BeamSearch(Search):
         self._hypotheses = None
         self._terminated_hypotheses = []
         self._sort_mask = None
+        self._eos_tensor = None
 
     def _init_state(self, dtype: torch.dtype, device: torch.device):
         self._device = device
         self._scores = torch.zeros(1, dtype=dtype, device=device)
         self._hypotheses = torch.empty(1, 0, dtype=torch.long, device=device)
+        self._eos_tensor = torch.tensor(self._eos_ids, dtype=torch.long, device=device).unsqueeze(1)
 
     def step(self, log_probs: torch.Tensor) -> torch.Tensor:
         """Take a single search step.
@@ -91,7 +93,12 @@ class BeamSearch(Search):
             self._init_state(log_probs.dtype, log_probs.device)
 
         log_probs.add_(self._scores.unsqueeze(1))
-        sample_scores, samples = torch.topk(log_probs.flatten(), 2 * self._search_size, sorted=False)
+        log_probs = log_probs.flatten()
+        sample_scores, samples = torch.topk(
+            log_probs,
+            # Take more to ensure that we will keep search_size not terminated
+            min((1 + len(self._eos_ids)) * self._search_size, log_probs.size(0))
+        )
 
         sort_mask = torch.div(samples, self._vocab_size)
         samples.fmod_(self._vocab_size)
@@ -135,22 +142,29 @@ class BeamSearch(Search):
         self._stash_terminated(samples)
 
     def _stash_terminated(self, samples: torch.Tensor):
-        is_terminated = torch.zeros(self.batch_size, dtype=torch.uint8, device=self._device)
-        for eos in self._eos_ids:
-            is_terminated |= samples == eos
+        # We want to stash tokens only from the first search_size
+        to_stash = self._is_samples_terminate(samples[:self._search_size])
 
         scores = self._scores / self._length
-        for terminated_hypothesis, score in zip(self._hypotheses[is_terminated], scores[is_terminated]):
+        for terminated_hypothesis, score in zip(
+                self._hypotheses[: self._search_size][to_stash], scores[: self._search_size][to_stash]
+        ):
             assert len(terminated_hypothesis) == int(self._length)
             self._terminated_hypotheses.append((terminated_hypothesis.clone(), score.item()))
 
-        self._apply_slice_to_state(~is_terminated)
+        # And throw out all terminated
+        terminated = self._is_samples_terminate(samples)
+        self._apply_slice_to_state(~terminated)
         self._sort_state()
 
     def _sort_state(self, sort_mask: torch.Tensor = None):
         if sort_mask is None:
             _, sort_mask = torch.topk(self._scores, self._search_size)
         self._apply_slice_to_state(sort_mask)
+
+    def _is_samples_terminate(self, samples: torch.Tensor):
+        result = samples == self._eos_tensor.expand(self._eos_tensor.size(0), samples.size(0))
+        return result.sum(dim=0, dtype=torch.uint8)
 
     def _apply_slice_to_state(self, tensor_slice):
         self._scores = self._scores[tensor_slice]
