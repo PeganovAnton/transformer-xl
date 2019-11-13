@@ -8,7 +8,7 @@ from typing import List
 
 import torch
 import tqdm
-from transformers import GPT2Tokenizer
+from pytorch_transformers import GPT2Tokenizer
 
 from mem_transformer import MemTransformerLM
 from prepare_git_data import prepare_project
@@ -107,6 +107,7 @@ def generate_text(
         diversity_strength: float = 0.3,
         tokenizer: GPT2Tokenizer = None,
         terminating_symbols: List[str] = None,
+        full_line: bool = False,
         verbose: bool = True,
 ) -> List[List[str]]:
     model.eval()
@@ -117,8 +118,10 @@ def generate_text(
     context = tokenizer.encode(context)
 
     if terminating_symbols is None:
-        # Use '\n' as default
-        terminating_symbols = ['\n', '(', ')', '[', ']', ':', '->', ',', '.']
+        if full_line:
+            terminating_symbols = ['\n']
+        else:
+            terminating_symbols = ['\n', '(', ')', '[', ']', ':', '->', ',', '.']
     terminal_ids = get_ids_with_symbols(terminating_symbols, tokenizer)
 
     with torch.no_grad():

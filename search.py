@@ -313,7 +313,7 @@ def perform_search(
         beam_size: int,
         num_groups: int,
         diversity_strength: float,
-        search_type: str,
+        search_type: str = "beam_search",
 ) -> List[List[Tuple[torch.Tensor, float]]]:
     """
     :param model: trained MemTransformerLM model
@@ -337,17 +337,30 @@ def perform_search(
     for mem in mems:
         assert mem.size(1) == 1, f"You must provide mems only for 1 example, but {mem.size(1)} was given"
 
+    if verbose:
+        print("----------Search info----------")
+        print(f"Vocab size: {log_probs.size(1)}")
+        print(f"Search_type: {search_type}")
+        print(f"Terminal ids: {terminal_id}")
+        print(f"Num iterations: {num_iterations}")
+        print(f"Beam_size: {beam_size}")
+        print(f"Num diversity groups: {num_groups}")
+        print(f"Diversity strength {diversity_strength}")
+
     if search_type == "beam_search":
-        print("Using Beam search")
+        if verbose:
+            print("Using Beam search")
         search_type = BeamSearch
     elif search_type == "viterbi":
-        print("Using Viterbi search")
+        if verbose:
+            print("Using Viterbi search")
         search_type = ViterbiSearch
         model.to(device=torch.device("cpu"), dtype=torch.float32)
         log_probs.to(device=torch.device("cpu"), dtype=torch.float32)
         mems = [mem.to(device=torch.device("cpu"), dtype=torch.float32) for mem in mems]
     if num_groups > 1:
-        print("Using Diverse search")
+        if verbose:
+            print("Using Diverse search")
         search = DiverseBeamSearch(
             eos_ids=terminal_id,
             vocab_size=log_probs.size(1),
@@ -358,6 +371,8 @@ def perform_search(
         )
     else:
         search = search_type(terminal_id, log_probs.size(1), beam_size)
+
+    print("-------------------------------")
 
     # expand batch
     log_probs = log_probs.repeat_interleave(search.batch_size, dim=0)
