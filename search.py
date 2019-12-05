@@ -1,3 +1,4 @@
+import math
 from typing import List, Tuple, Type
 
 import torch
@@ -18,12 +19,13 @@ class Search(object):
         self._search_size = search_size
         self._vocab_size = vocab_size
 
-    def step(self, log_probs: torch.Tensor) -> torch.Tensor:
+    def step(self, log_probs: torch.Tensor, possible_infs: bool = False) -> torch.Tensor:
         """Take a single search step.
 
         Args:
             log_probs: (batch_size, vocab_size)
                 the model's log-probabilities over the vocabulary at the current step
+            possible_infs: whether log_probs can contain -inf
 
         Return:
             beams: (batch_size,)
@@ -76,12 +78,13 @@ class BeamSearch(Search):
         self._hypotheses = torch.empty(1, 0, dtype=torch.long, device=device)
         self._eos_tensor = torch.tensor(self._eos_ids, dtype=torch.long, device=device).unsqueeze(1)
 
-    def step(self, log_probs: torch.Tensor) -> torch.Tensor:
+    def step(self, log_probs: torch.Tensor, possible_infs: bool = False) -> torch.Tensor:
         """Take a single search step.
 
         Args:
             log_probs: (batch_size, vocab_size)
                 the model's log-probabilities over the vocabulary at the current step
+            possible_infs: whether log_probs can contain -inf
 
         Return:
             beams: (batch_size,)
@@ -97,7 +100,8 @@ class BeamSearch(Search):
         sample_scores, samples = torch.topk(
             log_probs,
             # Take more to ensure that we will keep search_size not terminated
-            min((1 + len(self._eos_ids)) * self._search_size, log_probs.size(0))
+            min((1 + len(self._eos_ids)) * self._search_size,
+                (log_probs != -math.inf).sum().item() if possible_infs else log_probs.size(0))
         )
 
         sort_mask = torch.div(samples, self._vocab_size)
@@ -143,7 +147,7 @@ class BeamSearch(Search):
 
     def _stash_terminated(self, samples: torch.Tensor):
         # We want to stash tokens only from the first search_size
-        to_stash = self._is_samples_terminate(samples[:self._search_size])
+        to_stash = self._is_sample_terminates(samples[:self._search_size])
 
         scores = self._scores / self._length
         for terminated_hypothesis, score in zip(
@@ -153,16 +157,16 @@ class BeamSearch(Search):
             self._terminated_hypotheses.append((terminated_hypothesis.clone(), score.item()))
 
         # And throw out all terminated
-        terminated = self._is_samples_terminate(samples)
+        terminated = self._is_sample_terminates(samples)
         self._apply_slice_to_state(~terminated)
         self._sort_state()
 
     def _sort_state(self, sort_mask: torch.Tensor = None):
         if sort_mask is None:
-            _, sort_mask = torch.topk(self._scores, self._search_size)
+            _, sort_mask = torch.topk(self._scores, min(self._search_size, self._scores.size(0)))
         self._apply_slice_to_state(sort_mask)
 
-    def _is_samples_terminate(self, samples: torch.Tensor):
+    def _is_sample_terminates(self, samples: torch.Tensor):
         result = samples == self._eos_tensor.expand(self._eos_tensor.size(0), samples.size(0))
         return result.sum(dim=0, dtype=torch.uint8)
 
@@ -199,14 +203,13 @@ class DiverseBeamSearch(Search):
         else:
             self._diversity_reward[:] = 0.0
 
-    def step(self, log_probs: torch.Tensor, additional_scores: torch.Tensor = None) -> torch.Tensor:
+    def step(self, log_probs: torch.Tensor, possible_infs: bool = False) -> torch.Tensor:
         """Take a single search step.
 
         Args:
             log_probs: (batch_size, vocab_size)
                 the model's log-probabilities over the vocabulary at the current step
-            additional_scores: (batch_size, vocab_size)
-                additional reward over the vocabulary, that will not include in the hypotheses scores
+            possible_infs: whether log_probs can contain -inf
 
         Return:
             beams: (batch_size,)
@@ -221,7 +224,7 @@ class DiverseBeamSearch(Search):
             old_batch_size = beam.batch_size
 
             cur_log_probs = log_probs[offset: offset + old_batch_size]
-            cur_beams_sort = beam.step(cur_log_probs)
+            cur_beams_sort = beam.step(cur_log_probs, possible_infs)
             beams_sort.append(cur_beams_sort + offset)
 
             # update diversity penalty
@@ -260,12 +263,13 @@ class ViterbiSearch(BeamSearch):
         self._scores = torch.zeros(1, dtype=dtype, device=device)
         self._hypotheses = torch.empty(1, 0, dtype=torch.long, device=device)
 
-    def step(self, log_probs: torch.Tensor) -> torch.Tensor:
+    def step(self, log_probs: torch.Tensor, possible_infs: bool = False) -> torch.Tensor:
         """Take a single search step.
 
         Args:
             log_probs: (batch_size, vocab_size)
                 the model's log-probabilities over the vocabulary at the current step
+            possible_infs: whether log_probs can contain -inf
 
         Return:
             beams: (batch_size,)
@@ -378,8 +382,12 @@ def perform_search(
     log_probs = log_probs.repeat_interleave(search.batch_size, dim=0)
     mems = [mem.repeat_interleave(search.batch_size, dim=1) for mem in mems]
 
+    # On the first iteration infs are possible
+    possible_infs = True
+
     for _ in tqdm.trange(num_iterations, disable=not verbose):
-        selected_inds = search.step(log_probs)
+        selected_inds = search.step(log_probs, possible_infs=possible_infs)
+        possible_infs = False
 
         data = search.last_predictions.unsqueeze(0)
         mems = [mem[:, selected_inds, :] for mem in mems]

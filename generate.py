@@ -4,11 +4,12 @@ Note: only works for BPE-based models.
 Based on https://github.com/huggingface/pytorch-pretrained-BERT/blob/master/examples/run_gpt2.py
 """
 import argparse
-from typing import List
+import math
+from typing import List, Iterable, Tuple, Union
 
 import torch
 import tqdm
-from pytorch_transformers import GPT2Tokenizer
+from transformers import GPT2Tokenizer
 
 from mem_transformer import MemTransformerLM
 from prepare_git_data import prepare_project
@@ -115,33 +116,23 @@ def generate_text(
     if not tokenizer:
         tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
 
-    context = tokenizer.encode(context)
-
     if terminating_symbols is None:
         if full_line:
             terminating_symbols = ['\n']
         else:
             terminating_symbols = ['\n', '(', ')', '[', ']', ':', '->', ',', '.']
-    terminal_ids = get_ids_with_symbols(terminating_symbols, tokenizer)
+    terminal_ids = _get_ids_with_symbols(terminating_symbols, tokenizer)
+
+    context, prefix = encode_context(context, tokenizer, terminating_symbols)
 
     with torch.no_grad():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        data = torch.tensor(context).to(device)
-        # Turn into a batch.
-        data = data.unsqueeze(1)
 
-        # Init mems with context
-        context_batches = torch.split(data, batch_len, dim=0)
-        mems = model.init_mems()
-        if verbose:
-            print("Prepare context for text generating...")
-        for batch in tqdm.tqdm(context_batches, disable=not verbose):
-            hiddens, mems = predict(model, batch, mems)
+        vocab = _get_vocab(tokenizer)
+        context = torch.tensor(context).to(device)
+        mems, log_probs = init_model_context(model, context, prefix, vocab, batch_len, verbose)
 
-        # Get the last log_probs for the first beam search iteration
-        log_probs = hidden_to_softmax(model, hiddens[-1], log=True)
-
-        # Generate text
+        # Generate code
         if verbose:
             print("Performing beam search...")
         results = perform_search(
@@ -158,16 +149,57 @@ def generate_text(
     return [[tokenizer.decode(hypothesis.tolist()) for hypothesis, score in group] for group in results]
 
 
-def get_ids_with_symbols(symbols: List[str], tokenizer: GPT2Tokenizer) -> List[int]:
-    def convert_token_to_string(token):
-        # Code this because old versions of HF's tokenizers don't support it
-        return bytearray([tokenizer.byte_decoder[c] for c in token]).decode('utf-8', errors="ignore")
+def encode_context(text: str, tokenizer: GPT2Tokenizer, ignored_symbols: List[str]) -> Tuple[List[int], Union[str, None]]:
+    tokens = tokenizer.tokenize(text)
+    ids = tokenizer.convert_tokens_to_ids(tokens)
+    prefix = _convert_token_to_string(tokens[-1], tokenizer)
+    if any(ignored_symbol in prefix for ignored_symbol in ignored_symbols):
+        return ids, None
+    else:
+        return ids[:-1], prefix
 
+
+def init_model_context(model: MemTransformerLM, context: torch.Tensor, prefix: Union[str, None], vocab: Iterable[str],
+                       batch_len: int = 1000, verbose: bool = True) -> Tuple[List[torch.Tensor], torch.Tensor]:
+    context.unsqueeze_(1)
+    context_batches = torch.split(context, batch_len, dim=0)
+    assert context_batches, f"Context hasn't examples, context shape: {context.size()}"
+    mems = model.init_mems()
+
+    if verbose:
+        print("Prepare context for code generating...")
+    for batch in tqdm.tqdm(context_batches, disable=not verbose):
+        hiddens, mems = predict(model, batch, mems)
+
+    # Get the last log_probs for the first beam search iteration
+    log_probs = hidden_to_softmax(model, hiddens[-1], log=True)
+
+    if prefix is not None:
+        # Mask log_probs with prefix
+        if verbose:
+            print(f"Masking first log probs with prefix {prefix}")
+        mask = torch.tensor([0 if token.startswith(prefix) else 1 for token in vocab],
+                            dtype=torch.uint8, device=context.device)
+        log_probs[0, mask] = -math.inf
+
+    return mems, log_probs
+
+
+def _convert_token_to_string(token, tokenizer: GPT2Tokenizer) -> str:
+    # Code this because old versions of HF's tokenizers don't support it
+    return bytearray([tokenizer.byte_decoder[c] for c in token]).decode('utf-8', errors="ignore")
+
+
+def _get_ids_with_symbols(symbols: List[str], tokenizer: GPT2Tokenizer) -> List[int]:
     result = []
     for token, token_id in tokenizer.encoder.items():
-        if any(symbol in convert_token_to_string(token) for symbol in symbols):
+        if any(symbol in _convert_token_to_string(token, tokenizer) for symbol in symbols):
             result.append(token_id)
     return result
+
+
+def _get_vocab(tokenizer: GPT2Tokenizer) -> Iterable[str]:
+    return (_convert_token_to_string(token, tokenizer) for token, _ in tokenizer.encoder.items())
 
 
 if __name__ == "__main__":
