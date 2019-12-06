@@ -185,7 +185,6 @@ class DiverseBeamSearch(Search):
             eos_ids: List[int],
             vocab_size: int,
             search_size: int,
-            search_type: Type[Search],
             num_groups: int,
             diversity_strength: float,
     ):
@@ -195,7 +194,7 @@ class DiverseBeamSearch(Search):
         self._diversity_strength = -diversity_strength
         self._diversity_reward = None
 
-        self._searches = [search_type(eos_ids, vocab_size, search_size) for _ in range(num_groups)]
+        self._searches = [BeamSearch(eos_ids, vocab_size, search_size) for _ in range(num_groups)]
 
     def _init_diversity_reward(self, dtype: torch.dtype, device: torch.device):
         if self._diversity_reward is None:
@@ -253,59 +252,6 @@ class DiverseBeamSearch(Search):
         return sum(beam.batch_size for beam in self._searches)
 
 
-class ViterbiSearch(BeamSearch):
-    def __init__(self, eos_ids: List[int], vocab_size: int, search_size: int):
-        super().__init__(eos_ids, vocab_size, vocab_size)
-        self._eos_ids = torch.tensor(eos_ids, dtype=torch.long)
-
-    def _init_state(self, dtype: torch.dtype, device: torch.device):
-        self._device = device
-        self._scores = torch.zeros(1, dtype=dtype, device=device)
-        self._hypotheses = torch.empty(1, 0, dtype=torch.long, device=device)
-
-    def step(self, log_probs: torch.Tensor, possible_infs: bool = False) -> torch.Tensor:
-        """Take a single search step.
-
-        Args:
-            log_probs: (batch_size, vocab_size)
-                the model's log-probabilities over the vocabulary at the current step
-            possible_infs: whether log_probs can contain -inf
-
-        Return:
-            beams: (batch_size,)
-                the hypothesis ids of the chosen elements, in the range [0, batch_size)
-        """
-        super()._step_check(log_probs)
-        if self._scores is None:
-            assert self._hypotheses is None
-            self._init_state(log_probs.dtype, log_probs.device)
-
-        log_probs.add_(self._scores.unsqueeze(1))
-        sample_scores, sort_mask = torch.max(log_probs, dim=0)
-        samples = torch.arange(log_probs.size(1), device=self._device)
-
-        # sort_mask = torch.div(samples, self._vocab_size)
-        # samples.fmod_(self._vocab_size)
-
-        self._init_sort_mask()
-        self._update_state(samples, sample_scores, sort_mask)
-        self._length += 1
-
-        return self._sort_mask
-
-    def _stash_terminated(self, samples: torch.Tensor):
-        is_terminated = torch.zeros(self.batch_size, dtype=torch.uint8, device=self._device)
-        is_terminated[self._eos_ids] = 1
-
-        scores = self._scores / self._length
-        for terminated_hypothesis, score in zip(self._hypotheses[is_terminated], scores[is_terminated]):
-            assert len(terminated_hypothesis) == int(self._length)
-            self._terminated_hypotheses.append((terminated_hypothesis.clone(), score.item()))
-
-        self._apply_slice_to_state(~is_terminated)
-        # self._sort_state()
-
-
 def perform_search(
         *,
         model: MemTransformerLM,
@@ -317,7 +263,6 @@ def perform_search(
         beam_size: int,
         num_groups: int,
         diversity_strength: float,
-        search_type: str = "beam_search",
 ) -> List[List[Tuple[torch.Tensor, float]]]:
     """
     :param model: trained MemTransformerLM model
@@ -329,7 +274,6 @@ def perform_search(
     :param beam_size: beam width, num performing hypotheses in each group
     :param num_groups: num diversity groups
     :param diversity_strength: how strong will be penalty for same tokens between groups
-    :param search_type: which search type to use "beam_search" or "viterbi"
 
     :returns list of diversity groups, where group is list of hypotheses and their scores
     """
@@ -344,24 +288,12 @@ def perform_search(
     if verbose:
         print("----------Search info----------")
         print(f"Vocab size: {log_probs.size(1)}")
-        print(f"Search_type: {search_type}")
         print(f"Terminal ids: {terminal_id}")
         print(f"Num iterations: {num_iterations}")
         print(f"Beam_size: {beam_size}")
         print(f"Num diversity groups: {num_groups}")
         print(f"Diversity strength {diversity_strength}")
 
-    if search_type == "beam_search":
-        if verbose:
-            print("Using Beam search")
-        search_type = BeamSearch
-    elif search_type == "viterbi":
-        if verbose:
-            print("Using Viterbi search")
-        search_type = ViterbiSearch
-        model.to(device=torch.device("cpu"), dtype=torch.float32)
-        log_probs.to(device=torch.device("cpu"), dtype=torch.float32)
-        mems = [mem.to(device=torch.device("cpu"), dtype=torch.float32) for mem in mems]
     if num_groups > 1:
         if verbose:
             print("Using Diverse search")
@@ -369,12 +301,13 @@ def perform_search(
             eos_ids=terminal_id,
             vocab_size=log_probs.size(1),
             search_size=beam_size,
-            search_type=search_type,
             num_groups=num_groups,
             diversity_strength=diversity_strength,
         )
     else:
-        search = search_type(terminal_id, log_probs.size(1), beam_size)
+        if verbose:
+            print("Using Beam search")
+        search = BeamSearch(terminal_id, log_probs.size(1), beam_size)
 
     print("-------------------------------")
 

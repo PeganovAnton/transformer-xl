@@ -31,7 +31,6 @@ def main():
     parser.add_argument("--context", type=str, default="", help="Conditional generation context")
     # git arguments
     parser.add_argument("--num_iterations", type=int, default=50)
-    parser.add_argument("--search", type=str, default="beam_search")
     parser.add_argument("--beam_size", type=int, default=5)
     parser.add_argument("--num_hyps", type=int, default=3, help="How many hypotheses from each group take. -1 for all.")
     parser.add_argument("--diversity_groups", type=int, default=5)
@@ -67,7 +66,6 @@ def main():
             context,
             num_iterations=args.num_iterations,
             batch_len=args.batch_len,
-            search_type=args.search,
             beam_size=args.beam_size,
             num_diversity_groups=args.diversity_groups,
             diversity_strength=args.diversity_strength,
@@ -102,7 +100,6 @@ def generate_text(
         context: str,
         num_iterations: int,
         batch_len: int = 384,
-        search_type: str = "beam_search",
         beam_size: int = 5,
         num_diversity_groups: int = 5,
         diversity_strength: float = 0.3,
@@ -141,7 +138,6 @@ def generate_text(
             log_probs=log_probs,
             num_iterations=num_iterations,
             terminal_id=terminal_ids,
-            search_type=search_type,
             beam_size=beam_size,
             num_groups=num_diversity_groups,
             diversity_strength=diversity_strength,
