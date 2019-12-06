@@ -142,7 +142,8 @@ def generate_text(
             num_groups=num_diversity_groups,
             diversity_strength=diversity_strength,
         )
-    return [[tokenizer.decode(hypothesis.tolist()) for hypothesis, score in group] for group in results]
+    prefix_len = len(prefix) if prefix is not None else 0
+    return [[tokenizer.decode(hypothesis.tolist())[prefix_len:] for hypothesis, score in group] for group in results]
 
 
 def encode_context(text: str, tokenizer: GPT2Tokenizer, ignored_symbols: List[str]) -> Tuple[List[int], Union[str, None]]:
