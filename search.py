@@ -116,9 +116,9 @@ class BeamSearch(Search):
     @property
     def hypotheses(self) -> List[List[Tuple[torch.Tensor, float]]]:
         """List of tuples of terminated hypotheses and theirs scores"""
-        hypotheses = [(hyp, score) for hyp, score in zip(self._hypotheses, self._scores / self._length)]
-        hypotheses += self._terminated_hypotheses
-        return [sorted(hypotheses, key=lambda x: x[1], reverse=True)]
+        # hypotheses = [(hyp, score) for hyp, score in zip(self._hypotheses, self._scores / self._length)]
+        # hypotheses += self._terminated_hypotheses
+        return [sorted(self._terminated_hypotheses, key=lambda x: x[1], reverse=True)]
 
     @property
     def last_predictions(self) -> torch.Tensor:
@@ -149,7 +149,8 @@ class BeamSearch(Search):
         # We want to stash tokens only from the first search_size
         to_stash = self._is_sample_terminates(samples[:self._search_size])
 
-        scores = self._scores / self._length
+        # scores = self._scores / self._length
+        scores = self._scores
         for terminated_hypothesis, score in zip(
                 self._hypotheses[: self._search_size][to_stash], scores[: self._search_size][to_stash]
         ):
