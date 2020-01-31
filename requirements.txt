@@ -1,3 +1,5 @@
+pygments
+youtokentome
 dill
 pytest
 torch==1.1.0
