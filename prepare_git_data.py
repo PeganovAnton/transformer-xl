@@ -11,7 +11,7 @@ import tqdm
 from pygments.lexers.python import Python3Lexer
 
 
-class GitDataPreprocessor(object):
+class GitDataPreprocessor:
     def __init__(
         self,
         *,
@@ -20,6 +20,7 @@ class GitDataPreprocessor(object):
         project_level: bool,
         file_split_symbol: str = None,
         filepath_split_symbol: str = "",
+        old_style: bool = False,
     ):
         assert (
             len(example_split_symbol) == 1
@@ -28,7 +29,7 @@ class GitDataPreprocessor(object):
             len(filepath_split_symbol) == 1
         ), f"You must provide a symbol, not a string. {filepath_split_symbol} were provided"
         assert (
-                len(file_split_symbol) == 1
+            len(file_split_symbol) == 1
         ), f"You must provide a symbol, not a string. {file_split_symbol} were provided"
 
         if project_level:
@@ -41,10 +42,15 @@ class GitDataPreprocessor(object):
         self._project_level = project_level
         self._path_content_split_symbol = filepath_split_symbol
 
+        self._old_style = old_style
+
         self._py_lexer = Python3Lexer()
 
     def prepare_context(self, context_files: Iterable[Tuple[str, str]], file_to_complete: Tuple[str, str]) -> str:
-        text = f"{self._example_split_symbol}\n"
+        if not self._old_style:
+            text = f"{self._example_split_symbol}\n"
+        else:
+            text = f"\n龖龖龖\n"
         if self._project_level:
             text += "".join((self._prepare_file(file, turn_filter=True) for file in context_files))
         text += self._prepare_file(file_to_complete, turn_filter=False)
@@ -95,10 +101,13 @@ class GitDataPreprocessor(object):
         return content
 
     def _merge_path_content(self, path: str, content: str) -> str:
-        return f"{self._file_split_symbol}{path}\n{self._path_content_split_symbol}\n{content}\n"
+        if not self._old_style:
+            return f"{self._file_split_symbol}{path}\n{self._path_content_split_symbol}\n{content}\n"
+        else:
+            return f"\n!龖!\n<<!<<{path}>>!>>\n{content}"
 
 
-class GitDataExtractor(object):
+class GitDataExtractor:
     def __init__(
         self,
         *,
