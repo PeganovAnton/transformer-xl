@@ -5,7 +5,14 @@ from dataclasses import replace, asdict
 from transformers import GPT2Tokenizer
 
 from configs.config_types import *
-from generating.tokenizer_wrapper import GPT2TokenizerWrapper
+
+
+def get_config_by_name(name: str):
+    assert re.match("\\w+", name), f"Config name should be a one word, but {name} was given"
+    assert name in globals(), f"There is no configs called {name}"
+    config = eval(name)
+    return config
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
