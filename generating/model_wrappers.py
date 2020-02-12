@@ -1,22 +1,23 @@
 import math
-from typing import List, Dict
+from typing import List, Dict, Union
 
 import torch
 import torch.nn.functional as F
 import tqdm
-from transformers import GPT2LMHeadModel, TransfoXLLMHeadModel, TransfoXLConfig
+from transformers import GPT2LMHeadModel, TransfoXLLMHeadModel, TransfoXLConfig, GPT2Config
 
+from configs.config_types import TokenizerWrapperConfig
+from configs.tokenizer_factory import get_tokenizer_wrapper
 from generating.beam_search.model_wrapper import ModelWrapper
-from generating.tokenizer_wrapper import TokenizerWrapperBase, GPT2TokenizerWrapper
 from mem_transformer import MemTransformerLM
 from util import unwrap_model
 
 
 class ModelWrapperBase(ModelWrapper):
-    def __init__(self, model: torch.nn.Module, tokenizer: TokenizerWrapperBase, device: torch.device):
+    def __init__(self, model: torch.nn.Module, tokenizer_config: TokenizerWrapperConfig, device: torch.device):
         self._model = ModelWrapperBase._prepare_model(model, device)
         print(f"Number of parameters: {sum(p.numel() for p in self._model.parameters())}")
-        self.tokenizer = tokenizer
+        self.tokenizer = get_tokenizer_wrapper(tokenizer_config)
 
         self._device = device
         self._last_prefix_len = None
@@ -98,7 +99,7 @@ class GPT2ModelWrapper(ModelWrapperBase):
 
         tokenizer = GPT2TokenizerWrapper(add_special_tokens=True)
 
-        super().__init__(model, tokenizer, device)
+        super().__init__(model, tokenizer_config, device)
 
         self._context_len = min(context_len, 1024)
 
@@ -130,7 +131,7 @@ class TransfoXLWrapper(ModelWrapperBase):
         tokenizer = GPT2TokenizerWrapper()
         model = TransfoXLLMHeadModel(config)
 
-        super().__init__(model, tokenizer, device)
+        super().__init__(model, tokenizer_config, device)
 
         self._batch_len = 384
 
@@ -164,7 +165,7 @@ class MemTransformerWrapper(ModelWrapperBase):
     def __init__(
         self,
         model_path: str,
-        tokenizer: TokenizerWrapperBase,
+        tokenizer_config: TokenizerWrapperConfig,
         device: torch.device,
         memory_len: int = 384,
         verbose: bool = False,
@@ -175,7 +176,7 @@ class MemTransformerWrapper(ModelWrapperBase):
         else:
             model = self._load_model(model_path, device)
 
-        super().__init__(model, tokenizer, device)
+        super().__init__(model, tokenizer_config, device)
 
         self._model.reset_length(1, 0, memory_len)
         self._batch_len = memory_len

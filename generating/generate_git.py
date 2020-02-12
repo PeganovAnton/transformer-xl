@@ -2,34 +2,18 @@
 import argparse
 from typing import List, Tuple
 
-from dataclasses import asdict
+from configs.configs import get_config_by_name
 
-from configs import get_config_by_name
-from configs.configs import (
-    SequenceGeneratingConfig,
-    GPT2ModelWrapperConfig,
-    TransformerXLWrapperConfig,
-    TransformerXLHFWrapperConfig,
-)
-from generating.model_wrappers import MemTransformerWrapper, GPT2ModelWrapper, TransfoXLWrapper
+from configs.configs import SequenceGeneratingConfig
+from configs.model_factory import get_model_wrapper
 from generating.beam_search.sequence_generator import SequenceGenerator
 from prepare_git_data import GitDataPreprocessor
 
 
 def generate_sequences(config: SequenceGeneratingConfig) -> List[List[Tuple[str, float]]]:
-    data_preprocessor = GitDataPreprocessor(**asdict(config.git_data_preprocessor_config))
+    data_preprocessor = GitDataPreprocessor(**config.git_data_preprocessor_config.as_dict())
 
-    if isinstance(config.model_config, TransformerXLWrapperConfig):
-        model_wrapper = MemTransformerWrapper(**asdict(config.model_config))
-
-    elif isinstance(config.model_config, GPT2ModelWrapperConfig):
-        model_wrapper = GPT2ModelWrapper(**asdict(config.model_config))
-
-    elif isinstance(config.model_config, TransformerXLHFWrapperConfig):
-        model_wrapper = TransfoXLWrapper(**asdict(config.model_config))
-
-    else:
-        raise NameError
+    model_wrapper = get_model_wrapper(config.model_config)
 
     sequence_generator = SequenceGenerator(
         model_wrapper=model_wrapper,
