@@ -1,23 +1,16 @@
 import datetime
-import os
 import pickle
-import sys
 import time
-from glob import glob
-from multiprocessing.pool import Pool
 from typing import List, Iterable, Union, Optional, Collection
 
-import numpy as np
-import pandas as pd
 import youtokentome as yttm
 from pygments.lexers.python import Python3Lexer
 from pygments.token import is_token_subtype, Comment, String, Text
 from tqdm import tqdm
-from transformers import GPT2Tokenizer
 from youtokentome import OutputType
 
 
-class GitBPE(object):
+class GitBPE:
     _available_methods = {"English", "PyToken", "Line"}
 
     _spaces = [" ", "\n", "\t", "\r"]
@@ -82,11 +75,17 @@ class GitBPE(object):
         preprocessed_texts = list(map(self._preprocess_text, texts))
         return self._trained_model.encode(preprocessed_texts, output_type, bos, eos, reverse, dropout_prob)
 
+    @property
     def vocab_size(self) -> int:
         return self._trained_model.bpe_cython.vocab_size()
 
+    @property
     def vocab(self) -> List[str]:
         return self._trained_model.bpe_cython.vocab()
+
+    def convert_tokens_to_string(self, tokens: List[str]):
+        ids = list(map(self.subword_to_id, tokens))
+        return self.decode([ids])[0]
 
     def subword_to_id(self, subword: str) -> int:
         return self._trained_model.bpe_cython.subword_to_id(subword)
