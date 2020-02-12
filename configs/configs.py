@@ -1,8 +1,9 @@
 """Config is a frozen dataclass.
-That allows accessing attributes as field names (like AttrDict) and using type hints."""
+That allows accessing attributes as field names (like AttrDict) and using type hints.
+You can find method replace from dataclasses module useful while working with configs."""
+import re
 
-from dataclasses import replace, asdict
-from transformers import GPT2Tokenizer
+from dataclasses import replace
 
 from configs.config_types import *
 
@@ -20,7 +21,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Data preprocessing configs
 git_data_preprocessor_file_level = GitDataPreprocessingConfig(
-    min_content_len=50, example_split_symbol="␢", file_split_symbol="ℱ", filepath_split_symbol="₣", project_level=False
+    min_content_len=50,
+    project_level=False,
+    old_style=False,
 )
 
 git_data_preprocessor_project = replace(git_data_preprocessor_file_level, project_level=True)
@@ -31,44 +34,41 @@ git_data_preprocessor_old = replace(git_data_preprocessor_file_level, old_style=
 gpt2_tokenizer_txl = GPT2TokenizerConfig(add_special_tokens=False)
 gpt2_tokenizer_hf = GPT2TokenizerConfig(add_special_tokens=True)
 
-# Model evaluation configs
-gpt2_wrapper_medium = GPT2ModelWrapperConfig(context_len=384, device=device, size="medium")
+git_bpe_line_5000 = GitBPETokenizerConfig(path_to_tokenizer="search-Line-5000.bpe")
 
+# Model evaluation configs
 transformerxl_wrapper_gpt2tok_old = TransformerXLWrapperConfig(
     model_path="git360-90.5-model.pt",
     memory_len=384,
-    tokenizer=GPT2TokenizerWrapper(**asdict(gpt2_tokenizer_txl)),
+    tokenizer_config=gpt2_tokenizer_txl,
     device=device,
     verbose=True,
     model_params=None,
 )
 
-transformerxl_gpt2med_eq = replace(
-    transformerxl_wrapper_gpt2tok_old,
-    model_params={
-        "n_layer": 24,
-        "d_model": 1024,
-        "n_head": 16,
-        "d_head": 64,
-        "d_inner": 3072,
-        "dropout": 0.2,
-        "dropatt": 0.2,
-        "tgt_len": 384,
-        "mem_len": 384,
-        "ext_len": 0,
-    },
+# Some configs for benchmarking
+tokenizer_config = git_bpe_line_5000
+vocab_size = 5000
+
+# tokenizer_config = gpt2_tokenizer_hf
+# vocab_size = 50257
+
+gpt2_wrapper_medium = GPT2ModelWrapperConfig(
+    tokenizer_config=tokenizer_config,
+    device=device,
+    config=GPT2Config(vocab_size=vocab_size, n_embd=1024, n_layer=24, n_head=16),
+    context_len=384,
+    from_pretrained_name=None,
 )
 
 transfoxl_HF = TransformerXLHFWrapperConfig(
-    config=TransfoXLConfig(
-        vocab_size=GPT2Tokenizer.from_pretrained("gpt2").vocab_size,
-        div_val=1,
-        n_layer=24,
-        d_inner=3072,
-        mem_len=384,
-        tgt_len=384,
-    ),
+    tokenizer_config=tokenizer_config,
     device=device,
+    config=TransfoXLConfig(
+        vocab_size=vocab_size, div_val=1, n_layer=24, d_inner=3072, mem_len=384, tgt_len=384, adaptive=False, cutoffs=[]
+    ),
+    mem_len=120,
+    from_pretrained_name=None,
 )
 
 # Beam search configs
@@ -81,14 +81,9 @@ sequence_generation_txl_gpt2tok_old = SequenceGeneratingConfig(
     num_iterations=50,
     git_data_preprocessor_config=git_data_preprocessor_old,
     model_config=transformerxl_wrapper_gpt2tok_old,
-    tokenizer_config=gpt2_tokenizer_txl,
     beam_search_config=beam_search_config_line,
 )
 
-sequence_generation_gpt2_medium = replace(
-    sequence_generation_txl_gpt2tok_old, model_config=gpt2_wrapper_medium, tokenizer_config=gpt2_tokenizer_hf
-)
+sequence_generation_gpt2_medium = replace(sequence_generation_txl_gpt2tok_old, model_config=gpt2_wrapper_medium)
 
 sequence_generation_transfoxl = replace(sequence_generation_txl_gpt2tok_old, model_config=transfoxl_HF)
-
-sequence_generation_txl_gpt2med_eq = replace(sequence_generation_txl_gpt2tok_old, model_config=transformerxl_gpt2med_eq)
