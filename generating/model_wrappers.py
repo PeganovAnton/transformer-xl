@@ -83,7 +83,7 @@ class ModelWrapperBase(ModelWrapper):
             assert tuple(log_probs.size()) == (
                 1,
                 self.vocab_size,
-            ), f"Log probs have shape: {log_probs.size()}, not (1, vocab_size)"
+            ), f"Log probs have shape: {log_probs.size()}, not (1, {self.vocab_size})"
 
             mask = torch.ones(self.vocab_size, dtype=torch.uint8)
             mask[prefix_mask] = 0
@@ -93,11 +93,22 @@ class ModelWrapperBase(ModelWrapper):
 
 
 class GPT2ModelWrapper(ModelWrapperBase):
-    def __init__(self, context_len: int, device: torch.device, size: str = "medium"):
-        sizes = {"distil": "distilgpt2", "small": "gpt2-small", "medium": "gpt2-medium", "large": "gpt2-large"}
-        model = GPT2LMHeadModel.from_pretrained(sizes[size])
+    def __init__(
+        self,
+        config: Union[GPT2Config, None],
+        tokenizer_config: TokenizerWrapperConfig,
+        device: torch.device,
+        context_len: int,
+        from_pretrained_name: Union[str, None] = None,
+    ):
+        assert (
+            config is not None or from_pretrained_name is not None
+        ), "You must provide config or from_pretrained_name, but both are None"
 
-        tokenizer = GPT2TokenizerWrapper(add_special_tokens=True)
+        if config:
+            model = GPT2LMHeadModel(config)
+        else:
+            model = GPT2LMHeadModel.from_pretrained(from_pretrained_name)
 
         super().__init__(model, tokenizer_config, device)
 
@@ -127,13 +138,27 @@ class GPT2ModelWrapper(ModelWrapperBase):
 
 
 class TransfoXLWrapper(ModelWrapperBase):
-    def __init__(self, config: TransfoXLConfig, device: torch.device):
-        tokenizer = GPT2TokenizerWrapper()
-        model = TransfoXLLMHeadModel(config)
+    def __init__(
+        self,
+        config: Union[TransfoXLConfig, None],
+        tokenizer_config: TokenizerWrapperConfig,
+        device: torch.device,
+        mem_len: int,
+        from_pretrained_name: Union[str, None] = None,
+    ):
+        assert (
+            config is not None or from_pretrained_name is not None
+        ), "You must provide config or from_pretrained_name, but both are None"
+
+        if config:
+            model = TransfoXLLMHeadModel(config)
+        else:
+            model = TransfoXLLMHeadModel.from_pretrained(from_pretrained_name)
+        model.reset_length(1, 0, mem_len)
 
         super().__init__(model, tokenizer_config, device)
 
-        self._batch_len = 384
+        self._batch_len = mem_len
 
         self._mems = self._model.init_mems(1)
 
@@ -169,10 +194,10 @@ class MemTransformerWrapper(ModelWrapperBase):
         device: torch.device,
         memory_len: int = 384,
         verbose: bool = False,
-        model_params: Dict = None,
+        model_params: Union[Dict, None] = None,
     ):
         if model_params:
-            model = MemTransformerLM(n_token=tokenizer.vocab_size, **model_params)
+            model = MemTransformerLM(**model_params)
         else:
             model = self._load_model(model_path, device)
 
