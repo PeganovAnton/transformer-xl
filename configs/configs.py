@@ -38,20 +38,19 @@ git_bpe_line_5000 = GitBPETokenizerConfig(path_to_tokenizer="search-Line-5000.bp
 
 # Model evaluation configs
 transformerxl_wrapper_gpt2tok_old = TransformerXLWrapperConfig(
-    model_path="git360-90.5-model.pt",
+    model="git360-90.5-model.pt",
     memory_len=384,
     tokenizer_config=gpt2_tokenizer_txl,
     device=device,
     verbose=True,
-    model_params=None,
 )
 
 # Some configs for benchmarking
-tokenizer_config = git_bpe_line_5000
-vocab_size = 5000
+# tokenizer_config = git_bpe_line_5000
+# vocab_size = 5000
 
-# tokenizer_config = gpt2_tokenizer_hf
-# vocab_size = 50257
+tokenizer_config = gpt2_tokenizer_hf
+vocab_size = 50257
 
 gpt2_wrapper_medium = GPT2ModelWrapperConfig(
     tokenizer_config=tokenizer_config,
@@ -65,15 +64,15 @@ transfoxl_HF = TransformerXLHFWrapperConfig(
     tokenizer_config=tokenizer_config,
     device=device,
     config=TransfoXLConfig(
-        vocab_size=vocab_size, div_val=1, n_layer=24, d_inner=3072, mem_len=384, tgt_len=384, adaptive=False, cutoffs=[]
+        vocab_size=vocab_size, div_val=1, n_layer=12, d_inner=3072, mem_len=384, tgt_len=384, adaptive=False, cutoffs=[], n_head=12, d_model=768,
     ),
-    mem_len=120,
+    mem_len=384,
     from_pretrained_name=None,
 )
 
 # Beam search configs
 beam_search_config_line = BeamSearchConfig(
-    terminal_strings=["\n"], beam_size=6, num_groups=1, diversity_strength=None, verbose=True
+    terminal_strings=[], beam_size=6, num_groups=1, diversity_strength=0.5, verbose=True
 )
 
 # Sequence generation configs

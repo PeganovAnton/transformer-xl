@@ -38,8 +38,13 @@ class Search:
         ), f"EOS ids must be less than vocab_size, but EOS ids: {self._eos_ids} and vocab_size: {self._vocab_size}"
 
     @property
-    def hypotheses(self) -> List[List[Tuple[List[int], float]]]:
+    def terminated_hypotheses(self) -> List[List[Tuple[List[int], float]]]:
         """List of list of tuples of terminated hypotheses and theirs scores"""
+        raise NotImplementedError
+
+    @property
+    def current_hypotheses(self) -> List[List[Tuple[List[int], float]]]:
+        """List of list of tuples of current hypotheses and theirs scores"""
         raise NotImplementedError
 
     @property
@@ -106,10 +111,16 @@ class BeamSearch(Search):
         return self._sort_mask
 
     @property
-    def hypotheses(self) -> List[List[Tuple[List[int], float]]]:
+    def terminated_hypotheses(self) -> List[List[Tuple[List[int], float]]]:
         """List of tuples of terminated hypotheses and theirs scores"""
         ans = sorted(self._terminated_hypotheses, key=lambda x: x[1], reverse=True)
         ans = [(hyp.tolist(), score) for hyp, score in ans]
+        return [ans]
+
+    @property
+    def current_hypotheses(self) -> List[List[Tuple[List[int], float]]]:
+        """List of tuples of current hypotheses and theirs scores"""
+        ans = sorted((hyp.tolist(), score.item()) for hyp, score in zip(self._hypotheses, self._scores))
         return [ans]
 
     @property
@@ -229,9 +240,14 @@ class DiverseBeamSearch(Search):
         return torch.cat(beams_sort)
 
     @property
-    def hypotheses(self) -> List[List[Tuple[List[int], float]]]:
+    def terminated_hypotheses(self) -> List[List[Tuple[List[int], float]]]:
         """List of groups of hypotheses, where group is a list of tuples of terminated hypotheses and theirs scores"""
-        return [beam.hypotheses[0] for beam in self._searches]
+        return [beam.terminated_hypotheses[0] for beam in self._searches]
+
+    @property
+    def current_hypotheses(self) -> List[List[Tuple[List[int], float]]]:
+        """List of groups of hypotheses, where group is a list of tuples of current hypotheses and theirs scores"""
+        return [beam.current_hypotheses[0] for beam in self._searches]
 
     @property
     def last_predictions(self) -> torch.Tensor:

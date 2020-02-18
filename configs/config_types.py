@@ -4,6 +4,8 @@ import torch
 from dataclasses import dataclass, fields
 from transformers import TransfoXLConfig, GPT2Config
 
+from mem_transformer import MemTransformerLM
+
 
 @dataclass(frozen=True)
 class BaseConfig:
@@ -53,10 +55,9 @@ class ModelWrapperConfig(BaseConfig):
 
 @dataclass(frozen=True)
 class TransformerXLWrapperConfig(ModelWrapperConfig):
-    model_path: str
+    model: Union[str, Dict, MemTransformerLM]
     memory_len: int = 384
     verbose: bool = True
-    model_params: Union[Dict, None] = None
 
 
 @dataclass(frozen=True)

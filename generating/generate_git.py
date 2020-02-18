@@ -10,7 +10,9 @@ from generating.beam_search.sequence_generator import SequenceGenerator
 from prepare_git_data import GitDataPreprocessor
 
 
-def generate_sequences(config: SequenceGeneratingConfig) -> List[List[Tuple[str, float]]]:
+def generate_sequences(
+    config: SequenceGeneratingConfig
+) -> Tuple[List[List[Tuple[str, float]]], List[List[Tuple[str, float]]]]:
     data_preprocessor = GitDataPreprocessor(**config.git_data_preprocessor_config.as_dict())
 
     model_wrapper = get_model_wrapper(config.model_config)
@@ -29,7 +31,7 @@ def generate_sequences(config: SequenceGeneratingConfig) -> List[List[Tuple[str,
     context = data_preprocessor.prepare_context(tuple(), (args.cur_file, content))
     print(f"\nContext:\n{context}\n")
 
-    sequences = sequence_generator.search_sequence(
+    terminated_sequences, current_sequences = sequence_generator.search_sequence(
         num_iterations=config.num_iterations,
         context=context,
         terminal_strings=config.beam_search_config.terminal_strings,
@@ -37,12 +39,15 @@ def generate_sequences(config: SequenceGeneratingConfig) -> List[List[Tuple[str,
 
     prefix_len = model_wrapper.last_prefix_len
 
-    decoded_groups = []
-    for group in sequences:
-        decoded_strings = model_wrapper.tokenizer.decode([seq for seq, score in group], prefix_len)
-        decoded_groups.append(list(zip(decoded_strings, ([score for seq, score in group]))))
+    terminated_groups, current_groups = [], []
+    for terminate_group, current_group in zip(terminated_sequences, current_sequences):
+        decoded_strings = model_wrapper.tokenizer.decode([seq for seq, score in terminate_group], prefix_len)
+        terminated_groups.append(list(zip(decoded_strings, ([score for seq, score in terminate_group]))))
 
-    return decoded_groups
+        decoded_strings = model_wrapper.tokenizer.decode([seq for seq, score in current_group], prefix_len)
+        current_groups.append(list(zip(decoded_strings, ([score for seq, score in current_group]))))
+
+    return terminated_groups, current_groups
 
 
 if __name__ == "__main__":
@@ -58,9 +63,14 @@ if __name__ == "__main__":
         config, SequenceGeneratingConfig
     ), f"You need pass SequenceGeneratingConfig as configs, not {type(config)}"
 
-    groups = generate_sequences(config)
+    terminated_groups, current_groups = generate_sequences(config)
 
-    for i, group in enumerate(groups):
-        print(f"---------------group #{i + 1}---------------")
+    for i, group in enumerate(terminated_groups, start=1):
+        print(f"---------------terminated_group #{i}---------------")
+        for seq, score in group[:5]:
+            print(f"{round(score, 2)}: {seq}")
+
+    for i, group in enumerate(current_groups, start=1):
+        print(f"---------------current_group #{i}---------------")
         for seq, score in group[:5]:
             print(f"{round(score, 2)}: {seq}")

@@ -27,7 +27,9 @@ class SequenceGenerator:
         self._model_wrapper = model_wrapper
         self._verbose = verbose
 
-    def search_sequence(self, num_iterations: int, **kwargs) -> List[List[Tuple[List[int], float]]]:
+    def search_sequence(
+        self, num_iterations: int, **kwargs
+    ) -> Tuple[List[List[Tuple[List[int], float]]], List[List[Tuple[List[int], float]]]]:
         search = self._get_search()
 
         log_probs = self._model_wrapper.init_state(**kwargs)
@@ -50,7 +52,7 @@ class SequenceGenerator:
 
         self._model_wrapper.reset_state()
 
-        return search.hypotheses
+        return search.terminated_hypotheses, search.current_hypotheses
 
     def _get_search(self) -> Search:
         if self._num_groups > 1:
@@ -87,3 +89,6 @@ class SequenceGenerator:
         self._beam_size = beam_size
         self._num_groups = num_groups
         self._diversity_strength = diversity_strength
+
+    def set_model_wrapper(self, model_wrapper: ModelWrapper):
+        self._model_wrapper = model_wrapper

@@ -189,17 +189,20 @@ class TransfoXLWrapper(ModelWrapperBase):
 class MemTransformerWrapper(ModelWrapperBase):
     def __init__(
         self,
-        model_path: str,
+        model: Union[str, Dict, MemTransformerLM],
         tokenizer_config: TokenizerWrapperConfig,
         device: torch.device,
         memory_len: int = 384,
         verbose: bool = False,
-        model_params: Union[Dict, None] = None,
     ):
-        if model_params:
-            model = MemTransformerLM(**model_params)
+        if isinstance(model, Dict):
+            model = MemTransformerLM(**model)
+        elif isinstance(model, str):
+            model = self._load_model(model, device)
+        elif isinstance(model, MemTransformerLM):
+            model = model
         else:
-            model = self._load_model(model_path, device)
+            raise TypeError(f"model has type {type(model)}, but only str, Dict or MemTransformerLM allowed")
 
         super().__init__(model, tokenizer_config, device)
 
@@ -230,13 +233,13 @@ class MemTransformerWrapper(ModelWrapperBase):
     def reset_state(self) -> None:
         self._mems = self._model.init_mems()
 
-    def _predict(self, data, mems):
+    def _predict(self, data: torch.Tensor, mems: List[torch.Tensor]):
         tgt_len = data.size(0)
         hidden, new_mems = self._model._forward(data, mems=mems)
         pred_hid = hidden[-tgt_len:]
         return pred_hid, new_mems
 
-    def _hidden_to_softmax(self, hidden, temperature=None, log=False):
+    def _hidden_to_softmax(self, hidden: torch.Tensor, temperature=None, log=False):
         """Turn a hidden projection into softmax or log softmax.
 
         Adapted from utils/proj_adaptive_softmax.py
