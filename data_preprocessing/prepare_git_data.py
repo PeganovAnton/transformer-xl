@@ -15,7 +15,6 @@ class GitDataPreprocessor:
     def __init__(
         self,
         *,
-        min_content_len: int,
         example_split_symbol: str,
         project_level: bool,
         file_split_symbol: str = None,
@@ -37,7 +36,6 @@ class GitDataPreprocessor:
             self._file_split_symbol = file_split_symbol + "\n"
         else:
             self._file_split_symbol = ""
-        self._min_content_len = min_content_len
         self._example_split_symbol = example_split_symbol
         self._project_level = project_level
         self._path_content_split_symbol = filepath_split_symbol
@@ -90,15 +88,13 @@ class GitDataPreprocessor:
         return bool(filename)
 
     def _content_is_good(self, content: str) -> bool:
-        return len(content) >= self._min_content_len
+        return bool(content)
 
     def _preprocess_filename(self, filename: str) -> str:
         return filename
 
     def _preprocess_content(self, content: str) -> str:
-        # tokens = self._py_lexer.get_tokens_unprocessed(content)
-        # return "".join(tok[2] for tok in tokens if not is_token_subtype(str(tok[1]), Comment))
-        return content
+        return "\n".join(line.rstrip() for line in content.split("\n") if line.strip())
 
     def _merge_path_content(self, path: str, content: str) -> str:
         if not self._old_style:
@@ -111,7 +107,6 @@ class GitDataExtractor:
     def __init__(
         self,
         *,
-        min_content_len: int,
         example_split_symbol: str,
         project_level: bool,
         file_split_symbol: str = None,
@@ -123,16 +118,17 @@ class GitDataExtractor:
         self._num_projects_to_load = num_projects_to_load if num_projects_to_load is not None else float("+inf")
         self._random_seed = random_seed
 
-        self._content_set = set()
+        self._content_sets = list()
         self._write_counter = 0
 
         self._preprocessor = GitDataPreprocessor(
-            min_content_len=min_content_len,
             example_split_symbol=example_split_symbol,
             project_level=project_level,
             file_split_symbol=file_split_symbol,
             filepath_split_symbol=filepath_split_symbol,
         )
+
+        self._py_lexer = Python3Lexer()
 
     def prepare_dataset(
         self,
@@ -152,7 +148,7 @@ class GitDataExtractor:
             return os.path.join(parent_path, f"test.txt")
 
         # MB -> Bytes
-        train_files_size *= 1000 ** 2
+        train_files_size = train_files_size * 1000 ** 2 if train_files_size > 0 else None
         val_file_size *= 1000 ** 2
         test_file_size *= 1000 ** 2
 
@@ -168,18 +164,36 @@ class GitDataExtractor:
         while self._write_texts(examples, next(train_paths), train_files_size):
             pass
 
+    @staticmethod
+    def _jaccard_similarity(a: frozenset, b: frozenset) -> float:
+        inter_len = len(a.intersection(b))
+        res = inter_len / (len(a) + len(b) - inter_len)
+        return res
+
+    def _check_duplicate(self, content: str) -> bool:
+        token_set = frozenset(hash(tok[1]) for tok in self._py_lexer.get_tokens(content))
+        if any(GitDataExtractor._jaccard_similarity(token_set, prev_set) > 0.7 for prev_set in self._content_sets):
+            return False
+        else:
+            self._content_sets.append(token_set)
+            return True
+
+    def _filter(self, content: str) -> bool:
+        # Hardcoded 5 and 99 percentiles
+        content_len = 111 < len(content) < 42476
+        # Hardcoded 5 and 95 percentiles
+        max_line_len = 37 < max(map(len, content.split("\n"))) < 741
+
+        return content_len and max_line_len  # and self._check_duplicate(content)
+
     def _prepare_example(self, example: Union[Tuple[str, str], Iterator[Tuple[str, str]]]) -> str:
         example_is_project = not isinstance(example, Tuple)
+
         if example_is_project and not self._project_level:
             text = "".join(self._preprocessor.prepare_example(file) for file in example)
         else:
             text = self._preprocessor.prepare_example(example)
-        text_hash = hash(text)
-        if text_hash in self._content_set:
-            return ""
-        else:
-            self._content_set.add(text_hash)
-            return text
+        return text
 
     def _write_texts(
         self,
@@ -224,14 +238,20 @@ class GitDataExtractor:
         self, raw_data_path: str, languages: Iterable[str] = ("Python",)
     ) -> Iterator[Iterator[Tuple[str, str]]]:
         def read_file(path):
+            path = path.split("/")
+            assert path[2] in ("imports", "no-imports")
+
+            if random.random() >= 0.5 and os.path.exists(os.path.join(*path[:2], "no-imports", *path[3:])):
+                path = os.path.join(*path[:2], "no-imports", *path[3:])
+            else:
+                path = os.path.join(*path[:2], "imports", *path[3:])
+
             with open(path, "rt", encoding="utf-8", errors="ignore") as f:
                 return f.read()
 
         files = []
         for language in languages:
-            files += glob.iglob(
-                os.path.join(raw_data_path, "v3", "languages", language, ".*", "**", "*.*"), recursive=True
-            )
+            files += glob.iglob(os.path.join(raw_data_path, "languages", language, ".*", "**", "*.*"), recursive=True)
         assert files, f"There are no files in {raw_data_path} with languages {languages}"
 
         projects = collections.defaultdict(list)
@@ -246,19 +266,26 @@ class GitDataExtractor:
         processed_projects = []
         files_amount = 0
         for project_name, files in projects:
-            paths_dict_path = os.path.join(
-                raw_data_path,
-                "v3",
-                "repositories",
-                "repositories",
-                # files[0].split("/")[5],
-                files[0].split("/")[6],
-                files[0].split("/")[7],
-                "master",
-                "paths.json",
+            paths_dict_paths = glob.glob(
+                os.path.join(
+                    raw_data_path,
+                    # "v3",
+                    "repositories",
+                    # "repositories",
+                    # files[0].split("/")[5],
+                    files[0].split("/")[6],
+                    files[0].split("/")[7],
+                    "*",
+                    "paths.json",
+                )
             )
-            with open(paths_dict_path, "rt") as f:
-                paths_dict = json.load(f)
+            res = {}
+            for paths_dict_path in paths_dict_paths:
+                with open(paths_dict_path, "rt") as f:
+                    paths_dict = json.load(f)
+                res.update(paths_dict)
+            paths_dict = res
+
             names_and_paths = [
                 (paths_dict[os.path.basename(file)], file) for file in files if os.path.basename(file) in paths_dict
             ]
@@ -267,7 +294,7 @@ class GitDataExtractor:
 
         print(f"Found {projects_amount} projects with {files_amount} files")
 
-        reading_bar = tqdm.tqdm(total=projects_amount, desc="Reading projects...")
+        reading_bar = tqdm.tqdm(total=projects_amount, desc="Reading and filtering projects...")
         self._writing_bar = (
             tqdm.tqdm(total=projects_amount, desc="Processing and writing projects...")
             if self._project_level
@@ -276,7 +303,11 @@ class GitDataExtractor:
         random.seed(self._random_seed)
         random.shuffle(processed_projects)
         for project in processed_projects:
-            yield ((name, read_file(path)) for name, path in project)
+            yield [
+                (path, content)
+                for path, content in ((name, read_file(path)) for name, path in project)
+                if self._filter(content)
+            ]
             reading_bar.update(1)
 
 
@@ -285,7 +316,6 @@ if __name__ == "__main__":
     args.add_argument("--src", type=str, required=True, help="path to the dataset (v3) folder")
     args.add_argument("--dest", type=str, required=True, help="where to store train valid test files")
     # Optional arguments
-    args.add_argument("--min_len", type=int, default=5, help="minimum file content length")
     args.add_argument("--example_sym", type=str, default="␢", help="symbol which will be inserted between examples")
     args.add_argument("--project_level", action="store_true", help="whether to build project level dataset")
     args.add_argument(
@@ -301,13 +331,12 @@ if __name__ == "__main__":
         "--proj_memory", type=int, default=None, help="how many projects will be load to memory for random shuffle"
     )
     args.add_argument("--seed", type=int, default=17, help="random seed for example shuffle")
-    args.add_argument("--train_size", type=int, default=100, help="size of train files tat will be produced")
-    args.add_argument("--val_size", type=int, default=1, help="size of train files tat will be produced")
-    args.add_argument("--test_size", type=int, default=10, help="size of train files tat will be produced")
+    args.add_argument("--train_size", type=int, default=-1, help="size of train files tat will be produced")
+    args.add_argument("--val_size", type=int, default=5, help="size of train files tat will be produced")
+    args.add_argument("--test_size", type=int, default=30, help="size of train files tat will be produced")
     args = args.parse_args()
 
     data_extractor = GitDataExtractor(
-        min_content_len=args.min_len,
         example_split_symbol=args.example_sym,
         project_level=args.project_level,
         file_split_symbol=args.file_sym,
