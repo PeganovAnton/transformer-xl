@@ -8,7 +8,7 @@ import wandb
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import RandomSampler, DistributedSampler, DataLoader
 from tqdm import trange, tqdm
-from transformers import PreTrainedModel, AdamW, get_constant_schedule_with_warmup
+from transformers import PreTrainedModel, AdamW, get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
 
 from data_preprocessing.bpe import GitBPE
 from hf_training.eval import evaluate
@@ -51,7 +51,7 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
     # scheduler = get_linear_schedule_with_warmup(
     #     optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total
     # )
-    scheduler = get_constant_schedule_with_warmup(
+    scheduler = get_cosine_schedule_with_warmup(
         optimizer, num_warmup_steps=int(args.warmup_tokens / args.train_batch_size / args.block_size)
     )
 
