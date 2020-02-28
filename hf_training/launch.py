@@ -224,7 +224,7 @@ def main():
         n_embd = 256
         n_layer = 3
     elif args.model_size == "txl-like":
-        args.block_size = 1024
+        args.block_size = 384
         n_embd = 1024
         n_layer = 18
     elif args.model_size == "medium":

@@ -27,7 +27,12 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
 
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
     train_dataloader = DataLoader(
-        train_dataset, sampler=train_sampler, batch_size=args.train_batch_size, collate_fn=collate, num_workers=16,
+        train_dataset,
+        sampler=train_sampler,
+        batch_size=args.train_batch_size,
+        collate_fn=collate,
+        num_workers=4,
+        drop_last=True,
     )
 
     if args.max_steps > 0:
@@ -174,7 +179,14 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                 model.zero_grad()
                 global_step += 1
 
-                if args.local_rank in [-1, 0]:
+                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                    # Log eval metrics
+                    if args.local_rank == -1 and args.evaluate_during_training:
+                        # Only evaluate when single GPU otherwise metrics may not average well
+                        results = evaluate(args, model, tokenizer)
+                        for key, value in results.items():
+                            wandb.log({"eval/{}".format(key): value}, step=global_step)
+
                     # Log train metrics
                     wandb.log(
                         {
@@ -201,13 +213,8 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                         step=global_step,
                     )
 
-                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                    # Log eval metrics
-                    if args.local_rank == -1 and args.evaluate_during_training:
-                        # Only evaluate when single GPU otherwise metrics may not average well
-                        results = evaluate(args, model, tokenizer)
-                        for key, value in results.items():
-                            wandb.log({"eval/{}".format(key): value}, step=global_step)
+                    training_time = time.time()
+                    consumed_tokens = 0
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     checkpoint_prefix = "checkpoint"
@@ -228,9 +235,6 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                     torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
                     torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
                     logger.info("Saving optimizer and scheduler states to %s", output_dir)
-
-                training_time = time.time()
-                consumed_tokens = 0
 
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()

@@ -9,8 +9,8 @@ from tqdm import tqdm
 from transformers import PreTrainedModel
 
 from data_preprocessing.bpe import GitBPE
-from hf_training.log import logger
 from hf_training.data_utils import load_and_cache_examples
+from hf_training.log import logger
 
 
 def accuracy_MRR(
@@ -60,7 +60,12 @@ def evaluate(args, model: PreTrainedModel, tokenizer: GitBPE, prefix="") -> Dict
 
     eval_sampler = SequentialSampler(eval_dataset)
     eval_dataloader = DataLoader(
-        eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size, collate_fn=collate, num_workers=16
+        eval_dataset,
+        sampler=eval_sampler,
+        batch_size=args.eval_batch_size,
+        collate_fn=collate,
+        num_workers=1,
+        drop_last=True,
     )
 
     # # multi-gpu evaluate
