@@ -177,7 +177,6 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                 optimizer.step()
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
-                global_step += 1
 
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     # Log eval metrics
@@ -235,6 +234,8 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                     torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
                     torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
                     logger.info("Saving optimizer and scheduler states to %s", output_dir)
+
+                global_step += 1
 
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
