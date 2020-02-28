@@ -139,7 +139,7 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
 
         tr_loss, logging_loss = 0.0, 0.0
         training_time = time.time()
-        consumed_tokens = 0
+        steps_past, consumed_tokens = 0, 0
 
         for step, batch in enumerate(epoch_iterator):
             # Skip past any already trained steps if resuming training
@@ -149,6 +149,7 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
 
             assert len(batch.size()) == 2
             consumed_tokens += args.train_batch_size * batch.size(1)
+            steps_past += 1
 
             inputs, labels = (batch, batch)
             inputs = inputs.to(args.device)
@@ -178,20 +179,13 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
 
-                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                    # Log eval metrics
-                    if args.local_rank == -1 and args.evaluate_during_training:
-                        # Only evaluate when single GPU otherwise metrics may not average well
-                        results = evaluate(args, model, tokenizer)
-                        for key, value in results.items():
-                            wandb.log({"eval/{}".format(key): value}, step=global_step)
-
+                if args.local_rank in [-1, 0]:
                     # Log train metrics
                     wandb.log(
                         {
                             "train/lr": scheduler.get_lr()[0],
-                            "train/loss": (tr_loss - logging_loss) / args.logging_steps,
-                            "train/perplexity": math.exp((tr_loss - logging_loss) / args.logging_steps),
+                            "train/loss": (tr_loss - logging_loss) / steps_past,
+                            "train/perplexity": math.exp((tr_loss - logging_loss) / steps_past),
                         },
                         step=global_step,
                     )
@@ -200,7 +194,7 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                     # Log times
                     total_time = time.time() - total_time_start
                     since_last_eval_time = time.time() - training_time
-                    step_time = since_last_eval_time / args.logging_steps
+                    step_time = since_last_eval_time / steps_past
                     tokens_per_sec = 1 / (since_last_eval_time / consumed_tokens)
 
                     wandb.log(
@@ -212,8 +206,13 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                         step=global_step,
                     )
 
-                    training_time = time.time()
-                    consumed_tokens = 0
+                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                    # Log eval metrics
+                    if args.local_rank == -1 and args.evaluate_during_training:
+                        # Only evaluate when single GPU otherwise metrics may not average well
+                        results = evaluate(args, model, tokenizer)
+                        for key, value in results.items():
+                            wandb.log({"eval/{}".format(key): value}, step=global_step)
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     checkpoint_prefix = "checkpoint"
@@ -236,6 +235,9 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                     logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
                 global_step += 1
+
+                training_time = time.time()
+                steps_past, consumed_tokens = 0, 0
 
             if 0 < args.max_steps < global_step:
                 epoch_iterator.close()
