@@ -228,7 +228,7 @@ def main():
         n_embd = 1024
         n_layer = 18
     elif args.model_size == "medium":
-        args.block_size = 1024
+        args.block_size = 384
         n_embd = 1024
         n_layer = 24
     else:
