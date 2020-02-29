@@ -155,7 +155,8 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
             inputs = inputs.to(args.device)
             labels = labels.to(args.device)
             model.train()
-            loss, *_ = model(inputs, labels=labels)
+            output = model(inputs, labels=labels)
+            loss = output[0]
 
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training

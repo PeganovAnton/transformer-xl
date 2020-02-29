@@ -86,7 +86,8 @@ def evaluate(args, model: PreTrainedModel, tokenizer: GitBPE, prefix="") -> Dict
         labels = labels.to(args.device)
 
         with torch.no_grad():
-            lm_loss, scores, *_ = model(inputs, labels=labels)
+            output = model(inputs, labels=labels)
+            lm_loss, scores = output[:2]
 
         # Loss
         eval_loss += lm_loss.mean().item()
