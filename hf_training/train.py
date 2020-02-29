@@ -61,6 +61,7 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
         num_warmup_steps=int(args.warmup_tokens / args.train_batch_size / args.block_size),
         num_training_steps=t_total,
     )
+    logger.info(f"Warmup for {int(args.warmup_tokens / args.train_batch_size / args.block_size)} steps")
 
     # Check if saved optimizer or scheduler states exist
     if (
