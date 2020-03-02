@@ -55,7 +55,7 @@ def main():
     )
     parser.add_argument("--tokenizer_path", default=None, type=str, required=True, help="Path to the GitBPE")
     parser.add_argument(
-        "--model_size", type=str, required=True, choices=["tiny", "medium", "txl-like"], help="Size of model"
+        "--model_size", type=str, required=True, choices=["tiny", "big", "txl-like"], help="Size of model"
     )
 
     # Other parameters
