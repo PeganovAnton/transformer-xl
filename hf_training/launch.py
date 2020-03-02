@@ -55,7 +55,7 @@ def main():
     )
     parser.add_argument("--tokenizer_path", default=None, type=str, required=True, help="Path to the GitBPE")
     parser.add_argument(
-        "--model_size", type=str, required=True, choices=["tiny", "medium", "txl-like"], help="Size of model"
+        "--model_size", type=str, required=True, choices=["tiny", "big", "txl-like"], help="Size of model"
     )
 
     # Other parameters
@@ -227,10 +227,10 @@ def main():
         args.block_size = 384
         n_embd = 1024
         n_layer = 18
-    elif args.model_size == "medium":
-        args.block_size = 384
+    elif args.model_size == "big":
+        args.block_size = 512
         n_embd = 1024
-        n_layer = 24
+        n_layer = 36
     else:
         assert False, f"Invalid model_size: {args.model_size}"
 

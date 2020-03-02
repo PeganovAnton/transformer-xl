@@ -21,6 +21,8 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
     total_time_start = time.time()
 
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
+    args.examples_per_step = args.train_batch_size * args.gradient_accumulation_steps
+    args.tokens_per_step = args.examples_per_step * args.block_size
 
     def collate(examples: List[torch.Tensor]):
         return pad_sequence(examples, batch_first=True)
@@ -52,7 +54,7 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
     ]
     optimizer = AdamW(
         optimizer_grouped_parameters,
-        lr=args.learning_rate / 32 * args.train_batch_size + args.gradient_accumulation_steps,
+        lr=args.learning_rate / 32 * args.examples_per_step,
         eps=args.adam_epsilon,
     )
     # scheduler = get_linear_schedule_with_warmup(
@@ -60,10 +62,10 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
     # )
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=int(args.warmup_tokens / args.train_batch_size / args.block_size),
+        num_warmup_steps=int(args.warmup_tokens / args.tokens_per_step),
         num_training_steps=t_total,
     )
-    logger.info(f"Warmup for {int(args.warmup_tokens / args.train_batch_size / args.block_size)} steps")
+    logger.info(f"Warmup for {int(args.warmup_tokens / args.tokens_per_step)} steps")
 
     # Check if saved optimizer or scheduler states exist
     if (
