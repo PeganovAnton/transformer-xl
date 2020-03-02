@@ -227,10 +227,10 @@ def main():
         args.block_size = 384
         n_embd = 1024
         n_layer = 18
-    elif args.model_size == "medium":
-        args.block_size = 384
+    elif args.model_size == "big":
+        args.block_size = 512
         n_embd = 1024
-        n_layer = 24
+        n_layer = 36
     else:
         assert False, f"Invalid model_size: {args.model_size}"
 
