@@ -1,76 +1,68 @@
 """Generate samples from a model trained on git dataset."""
 import argparse
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
+from configs.configs import SequenceGeneratorConfig
 from configs.configs import get_config_by_name
-
-from configs.configs import SequenceGeneratingConfig
-from configs.model_factory import get_model_wrapper
-from generating.beam_search.sequence_generator import SequenceGenerator
-from prepare_git_data import GitDataPreprocessor
+from generating.sequence_generator import SequenceGeneratorWrapper
 
 
 def generate_sequences(
-    config: SequenceGeneratingConfig
-) -> Tuple[List[List[Tuple[str, float]]], List[List[Tuple[str, float]]]]:
-    data_preprocessor = GitDataPreprocessor(**config.git_data_preprocessor_config.as_dict())
+    config: SequenceGeneratorConfig, cur_file: str, project_files: Union[List[str], None]
+) -> Tuple[List[List[Tuple[str, float]]], List[List[Tuple[str, float]]], str]:
 
-    model_wrapper = get_model_wrapper(config.model_config)
+    with open(cur_file, "rt") as f:
+        cur_file_content = f.read()
+    file_to_complete = (cur_file, cur_file_content)
 
-    sequence_generator = SequenceGenerator(
-        model_wrapper=model_wrapper,
-        terminal_ids=model_wrapper.tokenizer.find_ids_with_strings(config.beam_search_config.terminal_strings),
-        beam_size=config.beam_search_config.beam_size,
-        num_groups=config.beam_search_config.num_groups,
-        diversity_strength=config.beam_search_config.diversity_strength,
-        verbose=config.beam_search_config.verbose,
+    if project_files:
+        project_files_contents = []
+        for project_file in project_files:
+            with open(project_file, "rt") as f:
+                project_files_contents.append(f.read())
+        project_files = list(zip(project_files, project_files_contents))
+
+    sequence_generator_wrapper = SequenceGeneratorWrapper(config)
+    terminated_sequences, current_sequences, context = sequence_generator_wrapper.generate_sequence(
+        file_to_complete, project_files, return_context=True
     )
 
-    with open(args.cur_file, "rt") as f:
-        content = f.read()
-    context = data_preprocessor.prepare_context(tuple(), (args.cur_file, content))
-    print(f"\nContext:\n{context}\n")
-
-    terminated_sequences, current_sequences = sequence_generator.search_sequence(
-        num_iterations=config.num_iterations,
-        context=context,
-        terminal_strings=config.beam_search_config.terminal_strings,
-    )
-
-    prefix_len = model_wrapper.last_prefix_len
-
-    terminated_groups, current_groups = [], []
-    for terminate_group, current_group in zip(terminated_sequences, current_sequences):
-        decoded_strings = model_wrapper.tokenizer.decode([seq for seq, score in terminate_group], prefix_len)
-        terminated_groups.append(list(zip(decoded_strings, ([score for seq, score in terminate_group]))))
-
-        decoded_strings = model_wrapper.tokenizer.decode([seq for seq, score in current_group], prefix_len)
-        current_groups.append(list(zip(decoded_strings, ([score for seq, score in current_group]))))
-
-    return terminated_groups, current_groups
+    return terminated_sequences, current_sequences, context
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="GitHub dataset sequence generation")
     parser.add_argument("--config", type=str, required=True, help="configs name")
     parser.add_argument("--cur_file", type=str, default=None, help="Conditional generation context")
-    parser.add_argument("--context_files", type=str, default=None, nargs="+", help="Rest project files")
+    parser.add_argument(
+        "--project_files",
+        type=str,
+        default=None,
+        nargs="+",
+        help="Rest project files, if your model is project-level model",
+    )
 
     args = parser.parse_args()
 
-    config: SequenceGeneratingConfig = get_config_by_name(args.config)
+    config = get_config_by_name(args.config)
     assert isinstance(
-        config, SequenceGeneratingConfig
+        config, SequenceGeneratorConfig
     ), f"You need pass SequenceGeneratingConfig as configs, not {type(config)}"
 
-    terminated_groups, current_groups = generate_sequences(config)
+    terminated_groups, current_groups, context = generate_sequences(config, args.cur_file, args.project_files)
+
+    print(f"Context:\n{context}\n")
 
     for i, group in enumerate(terminated_groups, start=1):
-        print(f"---------------terminated_group #{i}---------------")
-        for seq, score in group[:5]:
+        print(f"---------------terminated_group #{i}. First 5 seqs:---------------")
+        for seq, score in group:
             print(f"{round(score, 2)}: {seq}")
 
     for i, group in enumerate(current_groups, start=1):
-        print(f"---------------current_group #{i}---------------")
-        for seq, score in group[:5]:
+        print(f"---------------current_group #{i}. First 5 seqs:------------------")
+        for seq, score in group:
             print(f"{round(score, 2)}: {seq}")
+
+
+if __name__ == "__main__":
+    main()

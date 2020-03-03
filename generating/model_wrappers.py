@@ -1,14 +1,19 @@
 import math
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Tuple
 
 import torch
 import torch.nn.functional as F
 import tqdm
-from transformers import GPT2LMHeadModel, TransfoXLLMHeadModel, TransfoXLConfig, GPT2Config
+from transformers import GPT2LMHeadModel, GPT2Config
 
-from configs.config_types import TokenizerWrapperConfig
-from configs.tokenizer_factory import get_tokenizer_wrapper
+from configs.config_types import (
+    TokenizerWrapperConfig,
+    ModelWrapperConfig,
+    TransformerXLWrapperConfig,
+    GPT2ModelWrapperConfig,
+)
 from generating.beam_search.model_wrapper import ModelWrapper
+from generating.tokenizer_wrapper import get_tokenizer_wrapper
 from mem_transformer import MemTransformerLM
 from util import unwrap_model
 
@@ -24,11 +29,13 @@ class ModelWrapperBase(ModelWrapper):
 
         self._mems = self._init_mems()
 
-    def init_state(self, context: str, terminal_strings: List[str]) -> torch.Tensor:
+    def init_state(
+        self, context: str, terminal_strings: List[str], iters: int, start_ids: List[int] = None
+    ) -> torch.Tensor:
         context, prefix_mask = self._tokenize_context(context, terminal_strings)
 
         with torch.no_grad():
-            log_probs = self._init_log_probs(context)
+            log_probs = self._init_log_probs(context, iters, start_ids)
 
         return self._mask_log_probs(log_probs, prefix_mask)
 
@@ -72,7 +79,7 @@ class ModelWrapperBase(ModelWrapper):
         context = torch.tensor(context).to(self._device)
         return context, prefix_mask
 
-    def _init_log_probs(self, context: torch.Tensor) -> torch.Tensor:
+    def _init_log_probs(self, context: torch.Tensor, iters: int, start_ids: List[int] = None) -> torch.Tensor:
         raise NotImplementedError
 
     def _get_log_probs(self, data: torch.Tensor) -> torch.Tensor:
@@ -92,41 +99,53 @@ class ModelWrapperBase(ModelWrapper):
         return log_probs
 
 
+def get_model_wrapper(config: ModelWrapperConfig) -> ModelWrapperBase:
+    if isinstance(config, TransformerXLWrapperConfig):
+        model_wrapper = MemTransformerWrapper(**config.as_dict())
+    elif isinstance(config, GPT2ModelWrapperConfig):
+        model_wrapper = GPT2ModelWrapper(**config.as_dict())
+    else:
+        raise TypeError(f"Provided config's type {type(config)} doesn't support in the factory method")
+
+    return model_wrapper
+
+
 class GPT2ModelWrapper(ModelWrapperBase):
     def __init__(
         self,
-        config: Union[GPT2Config, None],
+        model: Union[Tuple[str, GPT2Config], GPT2LMHeadModel],
         tokenizer_config: TokenizerWrapperConfig,
         device: torch.device,
-        context_len: int,
-        from_pretrained_name: Union[str, None] = None,
+        verbose: bool = True,
     ):
-        assert (
-            config is not None or from_pretrained_name is not None
-        ), "You must provide config or from_pretrained_name, but both are None"
-
-        if config:
-            model = GPT2LMHeadModel(config)
+        if isinstance(model, Tuple):
+            loaded_model = GPT2ModelWrapper.load_model(*model)
+        elif isinstance(model, GPT2LMHeadModel):
+            loaded_model = model
         else:
-            model = GPT2LMHeadModel.from_pretrained(from_pretrained_name)
+            raise TypeError(f"model has type {type(model)}, but only str, GPT2Config or GPT2LMHeadModel allowed")
 
-        super().__init__(model, tokenizer_config, device)
+        super().__init__(loaded_model, tokenizer_config, device)
 
-        self._context_len = min(context_len, 1024)
+        self._verbose = verbose
+        self._context_len = model[1].n_ctx
 
     def _init_mems(self):
         return None
 
-    def _init_log_probs(self, context: torch.Tensor) -> torch.Tensor:
-        context = context[-self._context_len :].unsqueeze(0)
+    def _init_log_probs(self, context: torch.Tensor, iters: int, start_ids: List[int] = None) -> torch.Tensor:
+        context = context[-(self._context_len - iters - 1) :]
+        if start_ids:
+            context = GPT2ModelWrapper._truncate_context(context, start_ids)
+            assert context[0].item() in start_ids
+        context.unsqueeze_(0)
 
         scores, self._mems = self._model(context)
         return F.log_softmax(scores[:, -1, :])
 
     def _get_log_probs(self, data: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            if self._mems[0].size(3) == self._context_len:
-                self._mems = [t[:, :, :, 1:] for t in self._mems]
+            assert self._mems[0].size(3) < self._context_len
 
             scores, self._mems = self._model(data.unsqueeze(1), self._mems)
             log_probs = F.log_softmax(scores.squeeze(1))
@@ -136,54 +155,24 @@ class GPT2ModelWrapper(ModelWrapperBase):
     def reset_state(self) -> None:
         self._mems = None
 
+    @staticmethod
+    def load_model(path: str, config: GPT2Config) -> GPT2LMHeadModel:
+        return GPT2LMHeadModel.from_pretrained(path, config=config)
 
-class TransfoXLWrapper(ModelWrapperBase):
-    def __init__(
-        self,
-        config: Union[TransfoXLConfig, None],
-        tokenizer_config: TokenizerWrapperConfig,
-        device: torch.device,
-        mem_len: int,
-        from_pretrained_name: Union[str, None] = None,
-    ):
+    @staticmethod
+    def _truncate_context(context: torch.Tensor, start_ids: List[int]) -> torch.Tensor:
         assert (
-            config is not None or from_pretrained_name is not None
-        ), "You must provide config or from_pretrained_name, but both are None"
+            context.ndimension() == 1
+        ), f"You must provide 1 dimensional tensor, but tensor with size {context.size()} was given"
+        assert start_ids, f"You must provide list with at least 1 element, but {start_ids} was given"
 
-        if config:
-            model = TransfoXLLMHeadModel(config)
-        else:
-            model = TransfoXLLMHeadModel.from_pretrained(from_pretrained_name)
-        model.reset_length(1, 0, mem_len)
+        start_ids = torch.tensor(start_ids, dtype=context.dtype, device=context.device).unsqueeze(1)
 
-        super().__init__(model, tokenizer_config, device)
+        mask = (context.unsqueeze(0) == start_ids.expand(start_ids.size(0), context.size(0))).sum(
+            dim=0, dtype=torch.uint8
+        )
 
-        self._batch_len = mem_len
-
-        self._mems = self._model.init_mems(1)
-
-    def _init_mems(self):
-        return self._model.init_mems(1)
-
-    def _init_log_probs(self, context: torch.Tensor) -> torch.Tensor:
-        context.unsqueeze_(0)
-
-        context_batches = torch.split(context, self._batch_len, dim=1)
-        assert context_batches, f"Context hasn't examples, context shape: {context.size()}"
-
-        for batch in tqdm.tqdm(context_batches):
-            scores, self._mems = self._model(batch, self._mems)
-
-        return F.log_softmax(scores[:, -1, :])
-
-    def _get_log_probs(self, data: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            scores, self._mems = self._model(data.unsqueeze(1), self._mems)
-            log_probs = F.log_softmax(scores.squeeze(1))
-            return log_probs
-
-    def reset_state(self) -> None:
-        self._mems = self._model.init_mems(1)
+        return context[mask.nonzero().squeeze()[0] :]
 
 
 class MemTransformerWrapper(ModelWrapperBase):
@@ -192,7 +181,6 @@ class MemTransformerWrapper(ModelWrapperBase):
         model: Union[str, Dict, MemTransformerLM],
         tokenizer_config: TokenizerWrapperConfig,
         device: torch.device,
-        memory_len: int = 384,
         verbose: bool = False,
     ):
         if isinstance(model, Dict):
@@ -206,14 +194,14 @@ class MemTransformerWrapper(ModelWrapperBase):
 
         super().__init__(model, tokenizer_config, device)
 
-        self._model.reset_length(1, 0, memory_len)
-        self._batch_len = memory_len
+        self._model.reset_length(1, 0, self._model.mem_len)
+        self._batch_len = self._model.mem_len
         self._verbose = verbose
 
     def _init_mems(self):
         return self._model.init_mems()
 
-    def _init_log_probs(self, context: torch.Tensor) -> torch.Tensor:
+    def _init_log_probs(self, context: torch.Tensor, iters: int, start_ids: List[int] = None) -> torch.Tensor:
         context.unsqueeze_(1)
 
         context_batches = torch.split(context, self._batch_len, dim=0)

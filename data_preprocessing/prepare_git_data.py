@@ -94,7 +94,10 @@ class GitDataPreprocessor:
         return filename
 
     def _preprocess_content(self, content: str) -> str:
-        return "\n".join(line.rstrip() for line in content.split("\n") if line.strip())
+        if not self._old_style:
+            return "\n".join(line.rstrip() for line in content.split("\n") if line.strip())
+        else:
+            return content
 
     def _merge_path_content(self, path: str, content: str) -> str:
         if not self._old_style:
