@@ -17,6 +17,7 @@ class GitDataPreprocessor:
         *,
         example_split_symbol: str,
         project_level: bool,
+        inference_mode: bool = False,
         file_split_symbol: str = None,
         filepath_split_symbol: str = "",
         old_style: bool = False,
@@ -41,6 +42,7 @@ class GitDataPreprocessor:
         self._path_content_split_symbol = filepath_split_symbol
 
         self._old_style = old_style
+        self._inference_mode = inference_mode
 
         self._py_lexer = Python3Lexer()
 
@@ -95,7 +97,11 @@ class GitDataPreprocessor:
 
     def _preprocess_content(self, content: str) -> str:
         if not self._old_style:
-            return "\n".join(line.rstrip() for line in content.split("\n") if line.strip())
+            if not self._inference_mode:
+                return "\n".join(line.rstrip() for line in content.split("\n") if line.strip())
+            else:
+                lines = content.split("\n")
+                return "\n".join([line.rstrip() for line in lines[:-1] if line.strip()] + [lines[-1]])
         else:
             return content
 

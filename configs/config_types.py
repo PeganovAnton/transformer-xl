@@ -26,6 +26,7 @@ class GitDataPreprocessingConfig(BaseConfig):
     example_split_symbol: str = "␢"
     file_split_symbol: str = "ℱ"
     filepath_split_symbol: str = "₣"
+    inference_mode: bool = False
     old_style: bool = False
 
 

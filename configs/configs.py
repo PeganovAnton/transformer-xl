@@ -20,9 +20,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Here go configs
 
 # Data preprocessing configs
-git_data_preprocessor_file_level = GitDataPreprocessingConfig(project_level=False, old_style=False)
+git_data_preprocessor_file_level = GitDataPreprocessingConfig(project_level=False, old_style=False, inference_mode=True)
 
-git_data_preprocessor_old = replace(git_data_preprocessor_file_level, old_style=True)
+git_data_preprocessor_old = replace(git_data_preprocessor_file_level, old_style=True, inference_mode=True)
 
 # Tokenizer configs
 gpt2_tokenizer_txl = GPT2TokenizerConfig(add_special_tokens=False)
