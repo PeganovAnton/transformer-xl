@@ -1,3 +1,4 @@
+import itertools
 import os
 import pickle
 import random
@@ -102,6 +103,8 @@ class LMIterator:
         self._batch_sequences = None
         self._need_transpose = not batch_first
 
+        self._need_to_reshuffle = False
+
         directory, filename = os.path.split(file_path)
         cached_features_file = os.path.join(
             directory, "_cached_lm_mem_" + str(batch_size) + "_" + str(batch_len) + "_" + filename
@@ -118,6 +121,7 @@ class LMIterator:
             with open(file_path, encoding="utf-8") as f:
                 text = f.read()
 
+            logger.info(f"Tokenizing text...")
             tokenized_text = tokenizer.encode([text], dropout_prob=dropout_prob)[0]
             del text
 
@@ -133,7 +137,7 @@ class LMIterator:
 
     @staticmethod
     def split_list(a: list, split_values: Tuple[Any]) -> List[list]:
-        start_ids = [i for i, val in enumerate(a) if val in split_values]
+        start_ids = [i for i, val in enumerate(a) if val in tqdm(split_values, "Splitting data to examples...")]
         assert start_ids[0] == 0 or start_ids[0] == 1
         result = [a[i:j] for i, j in zip(start_ids, start_ids[1:] + [len(a)])]
         assert sum(len(res) for res in result) <= len(a)
@@ -143,13 +147,14 @@ class LMIterator:
         total_len = sum(len(example) for example in self._examples)
         batch_sequence_len = total_len // self._batch_size
 
-        if self._batch_sequences is None or self._shuffle:
+        need_to_shuffle = self._shuffle and self._need_to_reshuffle
+        if self._batch_sequences is None or need_to_shuffle:
             batch_sequences = [[] for _ in range(self._batch_size)]
             batch_sequence_lengths = [0 for _ in range(self._batch_size)]
 
             # Randomly distribute examples into batch sequences until they full
             # In init, we sorted examples such that long goes first
-            for example in tqdm(self._examples, desc="Forming batches..."):
+            for example in tqdm(self._examples, desc="Shuffling examples..."):
                 cur_batch_sequence = random.randint(0, self._batch_size - 1)
                 # If current is full, goes to the previous one
                 while batch_sequence_lengths[cur_batch_sequence] >= batch_sequence_len:
@@ -159,11 +164,14 @@ class LMIterator:
                 batch_sequence_lengths[cur_batch_sequence] += len(example)
 
             # Shuffle each batch position to avoid example length bias
-            for batch_sequence in batch_sequences:
+            for batch_sequence in tqdm(batch_sequences, desc="Shuffling batch sequences..."):
                 random.shuffle(batch_sequence)
 
             # Concatenate examples
-            batch_sequences = [sum(batch_sequence, []) for batch_sequence in batch_sequences]
+            batch_sequences = [
+                list(itertools.chain(*batch_sequence))  # Fast analog to sum(batch_sequence, [])
+                for batch_sequence in tqdm(batch_sequences, desc="Concatenating batch sequences...")
+            ]
 
             min_batch_sequence_len = min(len(batch_sequence) for batch_sequence in batch_sequences)
             batch_sequences = [batch_sequence[:min_batch_sequence_len] for batch_sequence in batch_sequences]
@@ -190,6 +198,8 @@ class LMIterator:
             target = torch.tensor(target, dtype=torch.long)
 
             yield (data, target) if not self._need_transpose else (data.t(), target.t())
+
+        self._need_to_reshuffle = True
 
     def __len__(self):
         num_batches, remain_tokens = divmod(len(self._batch_sequences[0]), self._batch_len)
