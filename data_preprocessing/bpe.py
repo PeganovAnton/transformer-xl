@@ -14,6 +14,11 @@ class GitBPE:
         else:
             self._trained_model = model
 
+        self._id_token_vocab = {self.subword_to_id(token): token for token in self.vocab}
+        self._id_string_vocab = {
+            index: self.convert_tokens_to_string([token]) for index, token in self._id_token_vocab.items()
+        }
+
     @staticmethod
     def train(
         data_paths: Iterable[str],
@@ -55,19 +60,22 @@ class GitBPE:
     def vocab_size(self) -> int:
         return self._trained_model.bpe_cython.vocab_size()
 
-    @property
-    def max_len(self) -> float:
-        return float("+inf")
-
     def __len__(self) -> int:
         return self.vocab_size
 
     @property
     def ids_with_sep(self) -> List[int]:
         result = []
-        for i, word in enumerate(self.vocab):
-            if "▁" in word:
-                result.append(i)
+        for index, token in self._id_token_vocab.items():
+            if "▁" in token:
+                result.append(index)
+        return result
+
+    def ids_with_string(self, string: str) -> List[int]:
+        result = []
+        for index, _string in self._id_string_vocab.items():
+            if string in _string:
+                result.append(index)
         return result
 
     @property

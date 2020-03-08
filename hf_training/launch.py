@@ -25,12 +25,13 @@ import logging
 import os
 
 import torch
-from transformers import WEIGHTS_NAME, GPT2Config, GPT2LMHeadModel
+from transformers import WEIGHTS_NAME, GPT2Config, GPT2LMHeadModel, TransfoXLConfig
 
 from data_preprocessing.bpe import GitBPE
-from hf_training.data_utils import load_and_cache_examples
+from hf_training.data_utils import get_data_iterator
 from hf_training.eval import evaluate
 from hf_training.log import logger
+from hf_training.mem_transformer import TransfoXLLMHeadModelFixed
 from hf_training.train import train
 from hf_training.utils import set_seed, _sorted_checkpoints
 
@@ -54,11 +55,15 @@ def main():
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument("--tokenizer_path", default=None, type=str, required=True, help="Path to the GitBPE")
+    parser.add_argument("--model_type", type=str, required=True, choices=["gpt-2", "txl"], help="Type of model")
     parser.add_argument(
         "--model_size", type=str, required=True, choices=["tiny", "big", "txl-like"], help="Size of model"
     )
 
     # Other parameters
+    parser.add_argument(
+        "--example_symbol", type=str, default=None, help="Symbol by which data can be splitted to examples"
+    )
     parser.add_argument("--bpe_dropout", type=float, default=0.0, help="BPE dropout")
     parser.add_argument(
         "--eval_data_file",
@@ -149,6 +154,9 @@ def main():
     parser.add_argument("--server_port", type=str, default="", help="For distant debugging.")
     args = parser.parse_args()
 
+    if args.model_type == "txl":
+        assert args.example_symbol, f"If you are using model with memory, you must provide example split symbol"
+
     if args.eval_data_file is None and args.do_eval:
         raise ValueError(
             "Cannot do evaluation without an evaluation data file. Either supply a file to --eval_data_file "
@@ -209,41 +217,74 @@ def main():
     )
 
     # Set seed
-    set_seed(args)
+    set_seed(int(args.seed), args.n_gpu > 0)
 
     # Load pretrained model and tokenizer
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Barrier to make sure only the first process in distributed training download model & vocab
 
-    config_class, model_class, tokenizer_class = GPT2Config, GPT2LMHeadModel, GitBPE
+    tokenizer = GitBPE(args.tokenizer_path)
 
-    tokenizer = tokenizer_class(args.tokenizer_path)
+    if args.model_type == "gpt-2":
+        model_class = GPT2LMHeadModel
 
-    if args.model_size == "tiny":
-        args.block_size = 256
-        n_embd = 256
-        n_layer = 3
-    elif args.model_size == "txl-like":
-        args.block_size = 384
-        n_embd = 1024
-        n_layer = 18
-    elif args.model_size == "big":
-        args.block_size = 512
-        n_embd = 1024
-        n_layer = 36
+        if args.model_size == "tiny":
+            args.block_size = 256
+            n_embd = 256
+            n_layer = 3
+        elif args.model_size == "txl-like":
+            args.block_size = 384
+            n_embd = 1024
+            n_layer = 18
+        else:
+            assert args.model_size == "big"
+            args.block_size = 512
+            n_embd = 1024
+            n_layer = 36
+
+        config = GPT2Config(
+            vocab_size=len(tokenizer),
+            n_positions=args.block_size,
+            n_ctx=args.block_size,
+            n_embd=n_embd,
+            n_layer=n_layer,
+            n_head=n_embd // 64,
+        )
     else:
-        assert False, f"Invalid model_size: {args.model_size}"
+        assert args.model_type == "txl"
+        model_class = TransfoXLLMHeadModelFixed
 
-    config = GPT2Config(
-        vocab_size=len(tokenizer),
-        n_positions=args.block_size,
-        n_ctx=args.block_size,
-        n_embd=n_embd,
-        n_layer=n_layer,
-        n_head=n_embd // 64,
-    )
+        cutoffs = [1536, 1536 * 2, 12288]
+        div_val = 4
+        # tie_projs = [False] + ([True] * len(cutoffs))
+        if args.model_size == "tiny":
+            args.block_size = 256
+            d_embd = 256
+            n_layer = 3
+        elif args.model_size == "txl-like":
+            args.block_size = 384
+            d_embd = 1024
+            n_layer = 18
+        else:
+            assert args.model_size == "big"
+            args.block_size = 512
+            d_embd = 1024
+            n_layer = 36
 
-    args.block_size = min(args.block_size, tokenizer.max_len)
+        config = TransfoXLConfig(
+            vocab_size=len(tokenizer),
+            div_val=div_val,
+            # tie_projs=tie_projs,
+            cutoffs=cutoffs,
+            d_inner=4 * d_embd,
+            tgt_len=args.block_size,
+            mem_len=args.block_size,
+            d_embed=d_embd,
+            d_model=d_embd,
+            n_layer=n_layer,
+            n_head=d_embd // 64,
+            d_head=64,
+        )
 
     if args.model_name_or_path:
         model = model_class.from_pretrained(
@@ -258,25 +299,36 @@ def main():
 
     args.config = config
     args.model_size = sum(p.numel() for p in model.parameters())
+    if args.model_type == "gpt-2":
+        args.model_size_nonembd = sum(p.numel() for p in model.transformer.h.parameters())
+    else:
+        assert args.model_type == "txl"
+        args.model_size_nonembd = sum(p.numel() for p in model.transformer.layers.parameters())
 
     model.to(args.device)
 
     if args.local_rank == 0:
         torch.distributed.barrier()  # End of barrier to make sure only the first process in distributed training download model & vocab
 
+    # Calculate batch sizes
+    args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
+    args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+
     logger.info("Training/evaluation parameters %s", args)
+
+    eval_data_iterator = get_data_iterator(args, tokenizer, evaluate=True)
 
     # Training
     if args.do_train:
         if args.local_rank not in [-1, 0]:
             torch.distributed.barrier()  # Barrier to make sure only the first process in distributed training process the dataset, and the others will use the cache
 
-        train_dataset = load_and_cache_examples(args, tokenizer, evaluate=False)
+        train_data_iterator = get_data_iterator(args, tokenizer, evaluate=False)
 
         if args.local_rank == 0:
             torch.distributed.barrier()
 
-        global_step, tr_loss = train(args, train_dataset, model, tokenizer)
+        global_step, tr_loss = train(args, train_data_iterator, eval_data_iterator, model, tokenizer)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Saving best-practices: if you use save_pretrained for the model and tokenizer, you can reload them using from_pretrained()
@@ -299,7 +351,7 @@ def main():
 
         # Load a trained model and vocabulary that you have fine-tuned
         model = model_class.from_pretrained(args.output_dir)
-        tokenizer = tokenizer_class(args.tokenizer_path)
+        tokenizer = GitBPE(args.tokenizer_path)
         model.to(args.device)
 
     # Evaluation
@@ -318,7 +370,7 @@ def main():
 
             model = model_class.from_pretrained(checkpoint)
             model.to(args.device)
-            result = evaluate(args, model, tokenizer, prefix=prefix)
+            result = evaluate(args, model, eval_data_iterator, prefix=prefix)
             result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
             results.update(result)
 

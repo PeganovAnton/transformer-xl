@@ -1,8 +1,8 @@
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Tuple
 
 import torch
 from dataclasses import dataclass, fields
-from transformers import TransfoXLConfig, GPT2Config
+from transformers import GPT2Config, GPT2LMHeadModel
 
 from mem_transformer import MemTransformerLM
 
@@ -22,11 +22,11 @@ class BaseConfig:
 # Preprocessing config types
 @dataclass(frozen=True)
 class GitDataPreprocessingConfig(BaseConfig):
-    min_content_len: int
     project_level: bool
     example_split_symbol: str = "␢"
     file_split_symbol: str = "ℱ"
     filepath_split_symbol: str = "₣"
+    inference_mode: bool = False
     old_style: bool = False
 
 
@@ -51,27 +51,17 @@ class GitBPETokenizerConfig(TokenizerWrapperConfig):
 class ModelWrapperConfig(BaseConfig):
     tokenizer_config: TokenizerWrapperConfig
     device: torch.device
+    verbose: bool
 
 
 @dataclass(frozen=True)
 class TransformerXLWrapperConfig(ModelWrapperConfig):
     model: Union[str, Dict, MemTransformerLM]
-    memory_len: int = 384
-    verbose: bool = True
 
 
 @dataclass(frozen=True)
 class GPT2ModelWrapperConfig(ModelWrapperConfig):
-    config: Union[GPT2Config, None]
-    context_len: int
-    from_pretrained_name: Union[str, None]
-
-
-@dataclass(frozen=True)
-class TransformerXLHFWrapperConfig(ModelWrapperConfig):
-    config: Union[TransfoXLConfig, None]
-    mem_len: int
-    from_pretrained_name: Union[str, None]
+    model: Union[Tuple[str, GPT2Config], GPT2LMHeadModel]
 
 
 # Beam search config types
@@ -86,7 +76,7 @@ class BeamSearchConfig(BaseConfig):
 
 # Sequence generator config types
 @dataclass(frozen=True)
-class SequenceGeneratingConfig(BaseConfig):
+class SequenceGeneratorConfig(BaseConfig):
     num_iterations: int
     git_data_preprocessor_config: GitDataPreprocessingConfig
     model_config: ModelWrapperConfig

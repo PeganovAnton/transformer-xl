@@ -11,12 +11,12 @@ import torch
 from hf_training.log import logger
 
 
-def set_seed(args):
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if args.n_gpu > 0:
-        torch.cuda.manual_seed_all(args.seed)
+def set_seed(seed: int, cuda: bool = True):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if cuda:
+        torch.cuda.manual_seed_all(seed)
 
 
 def _sorted_checkpoints(args, checkpoint_prefix="checkpoint", use_mtime=False) -> List[str]:

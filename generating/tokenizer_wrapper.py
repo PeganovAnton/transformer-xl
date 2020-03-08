@@ -2,7 +2,8 @@ from typing import List, Tuple, Dict
 
 from transformers import GPT2Tokenizer
 
-from bpe import GitBPE
+from configs.config_types import TokenizerWrapperConfig, GPT2TokenizerConfig, GitBPETokenizerConfig
+from data_preprocessing.bpe import GitBPE
 from generating.trie import TrieNode
 
 
@@ -74,6 +75,17 @@ class TokenizerWrapperBase:
         return root
 
 
+def get_tokenizer_wrapper(config: TokenizerWrapperConfig) -> TokenizerWrapperBase:
+    if isinstance(config, GPT2TokenizerConfig):
+        tokenizer_wrapper = GPT2TokenizerWrapper(**config.as_dict())
+    elif isinstance(config, GitBPETokenizerConfig):
+        tokenizer_wrapper = GitBPETokenizerWrapper(**config.as_dict())
+    else:
+        raise TypeError(f"Provided config's type {type(config)} doesn't support in the factory method")
+
+    return tokenizer_wrapper
+
+
 class GPT2TokenizerWrapper(TokenizerWrapperBase):
     def __init__(self, add_special_tokens: bool = True):
         self._add_special_tokens = add_special_tokens
@@ -97,7 +109,7 @@ class GPT2TokenizerWrapper(TokenizerWrapperBase):
 
 class GitBPETokenizerWrapper(TokenizerWrapperBase):
     def __init__(self, path_to_tokenizer: str):
-        self._tokenizer = GitBPE.load(path_to_tokenizer)
+        self._tokenizer = GitBPE(path_to_tokenizer)
         id_token_vocab = {self._tokenizer.subword_to_id(token): token for token in self._tokenizer.vocab}
         id_string_vocab = {
             index: self._tokenizer.convert_tokens_to_string([token]) for index, token in id_token_vocab.items()
