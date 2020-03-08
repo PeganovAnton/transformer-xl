@@ -137,7 +137,7 @@ class LMIterator:
 
     @staticmethod
     def split_list(a: list, split_values: Tuple[Any]) -> List[list]:
-        start_ids = [i for i, val in enumerate(a) if val in tqdm(split_values, "Splitting data to examples...")]
+        start_ids = [i for i, val in tqdm(enumerate(a), "Splitting data to examples...") if val in split_values]
         assert start_ids[0] == 0 or start_ids[0] == 1
         result = [a[i:j] for i, j in zip(start_ids, start_ids[1:] + [len(a)])]
         assert sum(len(res) for res in result) <= len(a)
