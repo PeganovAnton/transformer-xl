@@ -62,7 +62,7 @@ def main():
 
     # Other parameters
     parser.add_argument(
-        "--example_symbol", type=str, default=None, help="Symbol by which data can be splitted to examples"
+        "--example_symbol", type=str, default="␢", help="Symbol by which data can be splitted to examples"
     )
     parser.add_argument("--bpe_dropout", type=float, default=0.0, help="BPE dropout")
     parser.add_argument(
