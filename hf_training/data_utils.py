@@ -107,7 +107,7 @@ class LMIterator:
 
         directory, filename = os.path.split(file_path)
         cached_features_file = os.path.join(
-            directory, "_cached_lm_mem_" + str(batch_size) + "_" + str(batch_len) + "_" + filename
+            directory, "_cached_lm_mem_" + filename
         )
 
         if os.path.exists(cached_features_file) and not overwrite_cache:
