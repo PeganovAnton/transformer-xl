@@ -1,12 +1,11 @@
 import math
 import os
 import time
-from typing import Tuple, List
+from typing import Tuple
 
 import torch
 import wandb
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import RandomSampler, DistributedSampler, DataLoader
 from tqdm import trange, tqdm
 from transformers import PreTrainedModel, AdamW, get_cosine_schedule_with_warmup
 
@@ -16,32 +15,18 @@ from hf_training.log import timeit, logger
 from hf_training.utils import set_seed, _rotate_checkpoints
 
 
-def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tuple[int, float]:
+def train(args, train_data_iterator, eval_data_iterator, model: PreTrainedModel, tokenizer: GitBPE) -> Tuple[int, float]:
     """ Train the model """
     total_time_start = time.time()
 
-    args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     args.examples_per_step = args.train_batch_size * args.gradient_accumulation_steps
     args.tokens_per_step = args.examples_per_step * args.block_size
 
-    def collate(examples: List[torch.Tensor]):
-        return pad_sequence(examples, batch_first=True)
-
-    train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-    train_dataloader = DataLoader(
-        train_dataset,
-        sampler=train_sampler,
-        batch_size=args.train_batch_size,
-        collate_fn=collate,
-        num_workers=4,
-        drop_last=True,
-    )
-
     if args.max_steps > 0:
         t_total = args.max_steps
-        args.num_train_epochs = args.max_steps // (len(train_dataloader) // args.gradient_accumulation_steps) + 1
+        args.num_train_epochs = args.max_steps // (len(train_data_iterator) // args.gradient_accumulation_steps) + 1
     else:
-        t_total = len(train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
+        t_total = len(train_data_iterator) // args.gradient_accumulation_steps * args.num_train_epochs
 
     # Prepare optimizer and schedule (linear warmup and decay)
     no_decay = ["bias", "LayerNorm.weight"]
@@ -53,17 +38,13 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
         {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], "weight_decay": 0.0},
     ]
     optimizer = AdamW(
-        optimizer_grouped_parameters,
-        lr=args.learning_rate / 32 * args.examples_per_step,
-        eps=args.adam_epsilon,
+        optimizer_grouped_parameters, lr=args.learning_rate / 32 * args.examples_per_step, eps=args.adam_epsilon
     )
     # scheduler = get_linear_schedule_with_warmup(
     #     optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total
     # )
     scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=int(args.warmup_tokens / args.tokens_per_step),
-        num_training_steps=t_total,
+        optimizer, num_warmup_steps=int(args.warmup_tokens / args.tokens_per_step), num_training_steps=t_total
     )
     logger.info(f"Warmup for {int(args.warmup_tokens / args.tokens_per_step)} steps")
 
@@ -99,7 +80,7 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
 
     # Train!
     logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", len(train_dataset))
+    logger.info("  Num examples = %d", len(train_data_iterator))
     logger.info("  Num Epochs = %d", args.num_train_epochs)
     logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size)
     logger.info(
@@ -120,8 +101,10 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
             # set global_step to gobal_step of last saved checkpoint from model path
             checkpoint_suffix = args.model_name_or_path.split("-")[-1].split("/")[0]
             global_step = int(checkpoint_suffix)
-            epochs_trained = global_step // (len(train_dataloader) // args.gradient_accumulation_steps)
-            steps_trained_in_current_epoch = global_step % (len(train_dataloader) // args.gradient_accumulation_steps)
+            epochs_trained = global_step // (len(train_data_iterator) // args.gradient_accumulation_steps)
+            steps_trained_in_current_epoch = global_step % (
+                len(train_data_iterator) // args.gradient_accumulation_steps
+            )
 
             logger.info("  Continuing training from checkpoint, will skip to saved global_step")
             logger.info("  Continuing training from epoch %d", epochs_trained)
@@ -130,38 +113,47 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
         except ValueError:
             logger.info("  Starting fine-tuning.")
 
-    model_to_resize = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
-    model_to_resize.resize_token_embeddings(len(tokenizer))
-    wandb.watch(model_to_resize, log_freq=args.logging_steps)
+    unwrapped_model = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
+    if args.model_type == "gpt-2":
+        wandb.watch(unwrapped_model, log_freq=args.logging_steps)
 
     model.zero_grad()
     train_iterator = trange(
         epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0]
     )
-    set_seed(args)  # Added here for reproducibility
+    set_seed(args.seed, args.n_gpu > 0)  # Added here for reproducibility
     for _ in train_iterator:
-        epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
+        epoch_iterator = tqdm(train_data_iterator, desc="Iteration", disable=args.local_rank not in [-1, 0])
 
         tr_loss, logging_loss = 0.0, 0.0
         training_time = time.time()
         steps_past, consumed_tokens = 0, 0
+        mems = tuple()
 
         for step, batch in enumerate(epoch_iterator):
+            if args.model_type == "gpt-2":
+                inputs, labels = (batch, batch)
+            else:
+                assert args.model_type == "txl"
+                inputs, labels = batch
             # Skip past any already trained steps if resuming training
             if steps_trained_in_current_epoch > 0:
                 steps_trained_in_current_epoch -= 1
                 continue
 
-            assert len(batch.size()) == 2
-            consumed_tokens += args.train_batch_size * batch.size(1)
+            assert inputs.ndimension() == 2 and inputs.size() == (args.train_batch_size, args.block_size)
+            assert labels.ndimension() == 2 and labels.size() == (args.train_batch_size, args.block_size)
+            consumed_tokens += args.train_batch_size * inputs.size(1)
             steps_past += 1
 
-            inputs, labels = (batch, batch)
             inputs = inputs.to(args.device)
             labels = labels.to(args.device)
             model.train()
-            output = model(inputs, labels=labels)
-            loss = output[0]
+            if args.model_type == "gpt-2":
+                loss, *_ = model(inputs, labels=labels)
+            else:
+                assert args.model_type == "txl"
+                loss, _, *mems = model(*mems, input_ids=inputs, labels=labels)
 
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -216,7 +208,7 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: GitBPE) -> Tup
                     # Log eval metrics
                     if args.local_rank == -1 and args.evaluate_during_training:
                         # Only evaluate when single GPU otherwise metrics may not average well
-                        results = evaluate(args, model, tokenizer)
+                        results = evaluate(args, model, eval_data_iterator)
                         for key, value in results.items():
                             wandb.log({"eval/{}".format(key): value}, step=global_step)
 

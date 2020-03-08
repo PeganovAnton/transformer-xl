@@ -1,15 +1,11 @@
 import math
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
 import torch
-from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import SequentialSampler, DataLoader
 from tqdm import tqdm
 from transformers import PreTrainedModel
 
-from data_preprocessing.bpe import GitBPE
-from hf_training.data_utils import load_and_cache_examples
 from hf_training.log import logger
 
 
@@ -42,58 +38,48 @@ def accuracy_MRR(
     return acc_top1, acc_topk, MRR_topk
 
 
-def evaluate(args, model: PreTrainedModel, tokenizer: GitBPE, prefix="") -> Dict:
+def evaluate(args, model: PreTrainedModel, eval_data_iterator, prefix="") -> Dict:
     # Loop to handle MNLI double evaluation (matched, mis-matched)
     eval_output_dir = args.output_dir
-
-    eval_dataset = load_and_cache_examples(args, tokenizer, evaluate=True)
 
     if args.local_rank in [-1, 0]:
         os.makedirs(eval_output_dir, exist_ok=True)
 
-    args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
-
-    # Note that DistributedSampler samples randomly
-
-    def collate(examples: List[torch.Tensor]):
-        return pad_sequence(examples, batch_first=True)
-
-    eval_sampler = SequentialSampler(eval_dataset)
-    eval_dataloader = DataLoader(
-        eval_dataset,
-        sampler=eval_sampler,
-        batch_size=args.eval_batch_size,
-        collate_fn=collate,
-        num_workers=1,
-        drop_last=True,
-    )
-
-    # # multi-gpu evaluate
-    # if args.n_gpu > 1:
-    #     model = torch.nn.DataParallel(model)
-
     # Eval!
     logger.info("***** Running evaluation {} *****".format(prefix))
-    logger.info("  Num examples = %d", len(eval_dataset))
+    logger.info("  Num examples = %d", len(eval_data_iterator))
     logger.info("  Batch size = %d", args.eval_batch_size)
     eval_loss, acc_top1, acc_top5, MRR_top5 = 0.0, 0.0, 0.0, 0.0
     nb_eval_steps = 0
+    mems = tuple()
     model.eval()
 
-    for batch in tqdm(eval_dataloader, desc="Evaluating"):
-        inputs, labels = (batch, batch)
+    for batch in tqdm(eval_data_iterator, desc="Evaluating"):
+        if args.model_type == "gpt-2":
+            inputs, labels = (batch, batch)
+        else:
+            assert args.model_type == "txl"
+            inputs, labels = batch
+
         inputs = inputs.to(args.device)
         labels = labels.to(args.device)
 
         with torch.no_grad():
-            output = model(inputs, labels=labels)
-            lm_loss, scores = output[:2]
+            if args.model_type == "gpt-2":
+                lm_loss, scores, *_ = model(inputs, labels=labels)
+            else:
+                assert args.model_type == "txl"
+                lm_loss, scores, *mems = model(*mems, input_ids=inputs, labels=labels, return_scores=True)
 
         # Loss
         eval_loss += lm_loss.mean().item()
 
         # Metrics
-        metrics = accuracy_MRR(scores, labels, top_k=5, shift=True)
+        if args.model_type == "gpt-2":
+            metrics = accuracy_MRR(scores, labels, top_k=5, shift=True)
+        else:
+            assert args.model_type == "txl"
+            metrics = accuracy_MRR(scores, labels, top_k=5, shift=False)
         acc_top1 += metrics[0]
         acc_top5 += metrics[1]
         MRR_top5 += metrics[2]
