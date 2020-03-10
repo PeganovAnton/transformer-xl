@@ -217,13 +217,14 @@ class GitDataExtractor:
         with open(file_path, "wt", encoding="utf-8") as file_object:
             cur_file_size = 0
 
+            if cur_file_size >= file_size:
+                return True
+
             for example in examples:
                 text = self._prepare_example(example)
                 cur_file_size += file_object.write(text)
-
                 self._writing_bar.update(1)
-                if cur_file_size >= file_size:
-                    return True
+
             return False
 
     def _shuffle_examples(self, projects: Iterator[Iterator[Tuple[str, str]]]) -> Iterator[Tuple[str, str]]:
