@@ -9,13 +9,12 @@ from torch.nn.utils.rnn import pad_sequence
 from tqdm import trange, tqdm
 from transformers import PreTrainedModel, AdamW, get_cosine_schedule_with_warmup
 
-from data_preprocessing.bpe import GitBPE
 from hf_training.eval import evaluate
 from hf_training.log import timeit, logger
-from hf_training.utils import set_seed, _rotate_checkpoints
+from hf_training.utils import set_seed, _rotate_checkpoints, save_checkpoint
 
 
-def train(args, train_data_iterator, eval_data_iterator, model: PreTrainedModel, tokenizer: GitBPE) -> Tuple[int, float]:
+def train(args, train_data_iterator, eval_data_iterator, model: PreTrainedModel, best_eval_loss: float) -> Tuple[int, float]:
     """ Train the model """
     total_time_start = time.time()
 
@@ -211,26 +210,13 @@ def train(args, train_data_iterator, eval_data_iterator, model: PreTrainedModel,
                         results = evaluate(args, model, eval_data_iterator)
                         for key, value in results.items():
                             wandb.log({"eval/{}".format(key): value}, step=global_step)
+                        eval_loss = results["loss"]
+                        if eval_loss < best_eval_loss:
+                            best_eval_loss = eval_loss
+                            save_checkpoint(args, 0, model, optimizer, scheduler, checkpoint_prefix="checkpoint-best")
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
-                    checkpoint_prefix = "checkpoint"
-                    # Save model checkpoint
-                    output_dir = os.path.join(args.output_dir, "{}-{}".format(checkpoint_prefix, global_step))
-                    os.makedirs(output_dir, exist_ok=True)
-                    model_to_save = (
-                        model.module if hasattr(model, "module") else model
-                    )  # Take care of distributed/parallel training
-                    model_to_save.save_pretrained(output_dir)
-                    # tokenizer.save(output_dir)
-
-                    torch.save(args, os.path.join(output_dir, "training_args.bin"))
-                    logger.info("Saving model checkpoint to %s", output_dir)
-
-                    _rotate_checkpoints(args, checkpoint_prefix)
-
-                    torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-                    torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
-                    logger.info("Saving optimizer and scheduler states to %s", output_dir)
+                    save_checkpoint(args, global_step, model, optimizer, scheduler, checkpoint_prefix="checkpoint")
 
                 global_step += 1
 

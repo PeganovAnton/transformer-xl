@@ -293,9 +293,13 @@ def main():
             config=config,
             cache_dir=args.cache_dir,
         )
+        with open(os.path.join(args.cache_dir, "eval_results.txt")) as f:
+            best_eval_loss = map(lambda line: float(line.split()[-1]), f.readlines()[-2])
+        logger.info(f"Loaded checkpoint with eval loss: {best_eval_loss}")
     else:
         logger.info("Training new model from scratch")
         model = model_class(config=config)
+        best_eval_loss = float("+inf")
 
     args.config = config
     args.model_size = sum(p.numel() for p in model.parameters())
@@ -328,7 +332,7 @@ def main():
         if args.local_rank == 0:
             torch.distributed.barrier()
 
-        global_step, tr_loss = train(args, train_data_iterator, eval_data_iterator, model, tokenizer)
+        global_step, tr_loss = train(args, train_data_iterator, eval_data_iterator, model, best_eval_loss)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
     # Saving best-practices: if you use save_pretrained for the model and tokenizer, you can reload them using from_pretrained()
