@@ -300,8 +300,8 @@ def main():
             config=config,
             cache_dir=args.cache_dir,
         )
-        with open(os.path.join(args.cache_dir, "eval_results.txt")) as f:
-            best_eval_loss = map(lambda line: float(line.split()[-1]), f.readlines()[-2])
+        with open(os.path.join(args.output_dir, "eval_results.txt")) as f:
+            best_eval_loss = float(f.readlines()[-2].split()[-1])
         logger.info(f"Loaded checkpoint with eval loss: {best_eval_loss}")
     else:
         logger.info("Training new model from scratch")
