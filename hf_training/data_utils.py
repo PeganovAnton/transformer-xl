@@ -18,61 +18,63 @@ class TextDataset(Dataset):
         self,
         tokenizer: GitBPE,
         args,
-        file_path: str,
+        file_paths: List[str],
         block_size=512,
         start_tokens: List[int] = None,
         dropout: float = 0,
     ):
-        assert os.path.isfile(file_path)
+        assert all(os.path.isfile(file_path) for file_path in file_paths)
         self._tokenizer = tokenizer
+        self.examples = []
+        skipped_tokens = 0
 
-        block_size = block_size
+        for file_path in file_paths:
+            directory, filename = os.path.split(file_path)
+            cached_features_file = os.path.join(directory, "_cached_lm_" + str(block_size) + "_" + filename)
 
-        directory, filename = os.path.split(file_path)
-        cached_features_file = os.path.join(directory, "_cached_lm_" + str(block_size) + "_" + filename)
+            if os.path.exists(cached_features_file) and not args.overwrite_cache:
+                logger.info("Loading features from cached file %s", cached_features_file)
+                with open(cached_features_file, "rb") as handle:
+                    self.examples += pickle.load(handle)
+            else:
+                logger.info("Creating features from dataset file at %s", directory)
 
-        if os.path.exists(cached_features_file) and not args.overwrite_cache:
-            logger.info("Loading features from cached file %s", cached_features_file)
-            with open(cached_features_file, "rb") as handle:
-                self.examples = pickle.load(handle)
-        else:
-            logger.info("Creating features from dataset file at %s", directory)
+                cur_examples = []
+                with open(file_path, encoding="utf-8") as f:
+                    text = f.read()
 
-            self.examples = []
-            with open(file_path, encoding="utf-8") as f:
-                text = f.read()
+                tokenized_text = tokenizer.encode([text], dropout_prob=dropout)[0]
+                del text
 
-            tokenized_text = tokenizer.encode([text], dropout_prob=dropout)[0]
-            del text
-
-            if start_tokens:
-                logger.info(f"Calculating examples which start only with tokens: {start_tokens}")
-                start_ids_inds = [token in start_tokens for i, token in enumerate(tokenized_text)]
-
-            i = 0
-            skipped_tokens = 0
-            while i <= len(tokenized_text) - block_size:
                 if start_tokens:
-                    try:
-                        offset = start_ids_inds.index(True, i) - i
-                    except ValueError:
-                        break
-                    skipped_tokens += offset
-                    i += offset
+                    logger.info(f"Calculating examples which start only with tokens: {start_tokens}")
+                    start_ids_inds = [token in start_tokens for i, token in enumerate(tokenized_text)]
 
-                example = tokenized_text[i : i + block_size]
-                self.examples.append(example)
-                i += block_size
-            skipped_tokens += len(tokenized_text) - i - 1
+                i = 0
+                while i <= len(tokenized_text) - block_size:
+                    if start_tokens:
+                        try:
+                            offset = start_ids_inds.index(True, i) - i
+                        except ValueError:
+                            break
+                        skipped_tokens += offset
+                        i += offset
 
-            logger.info(f"Skipped {skipped_tokens} tokens")
-            # Note that we are loosing the last truncated example here for the sake of simplicity (no padding)
-            # If your dataset is small, first you should loook for a bigger one :-) and second you
-            # can change this behavior by adding (model specific) padding.
+                    example = tokenized_text[i : i + block_size]
+                    cur_examples.append(example)
+                    i += block_size
+                skipped_tokens += len(tokenized_text) - i - 1
 
-            logger.info("Saving features into cached file %s", cached_features_file)
-            with open(cached_features_file, "wb") as handle:
-                pickle.dump(self.examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                logger.info(f"Skipped {skipped_tokens} tokens")
+                # Note that we are loosing the last truncated example here for the sake of simplicity (no padding)
+                # If your dataset is small, first you should loook for a bigger one :-) and second you
+                # can change this behavior by adding (model specific) padding.
+
+                logger.info("Saving features into cached file %s", cached_features_file)
+                with open(cached_features_file, "wb") as handle:
+                    pickle.dump(cur_examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+                self.examples += cur_examples
 
     def __len__(self):
         return len(self.examples)
@@ -87,7 +89,7 @@ class TextDataset(Dataset):
 class LMIterator:
     def __init__(
         self,
-        file_path: str,
+        file_paths: List[str],
         tokenizer: GitBPE,
         batch_size: int,
         batch_len: int,
@@ -105,34 +107,39 @@ class LMIterator:
 
         self._need_to_reshuffle = False
 
-        directory, filename = os.path.split(file_path)
-        cached_features_file = os.path.join(
-            directory, "_cached_lm_mem_" + filename
-        )
+        self._examples = []
 
-        if os.path.exists(cached_features_file) and not overwrite_cache:
-            logger.info("Loading features from cached file %s", cached_features_file)
-            with open(cached_features_file, "rb") as handle:
-                self._examples = pickle.load(handle)
-        else:
-            logger.info("Creating features from dataset file at %s", directory)
+        for file_path in file_paths:
+            directory, filename = os.path.split(file_path)
+            cached_features_file = os.path.join(
+                directory, "_cached_lm_mem_" + filename
+            )
 
-            self.batches = []
-            with open(file_path, encoding="utf-8") as f:
-                text = f.read()
+            if os.path.exists(cached_features_file) and not overwrite_cache:
+                logger.info("Loading features from cached file %s", cached_features_file)
+                with open(cached_features_file, "rb") as handle:
+                    self._examples += pickle.load(handle)
+            else:
+                logger.info("Creating features from dataset file at %s", directory)
 
-            logger.info(f"Tokenizing text...")
-            tokenized_text = tokenizer.encode([text], dropout_prob=dropout_prob)[0]
-            del text
+                self.batches = []
+                with open(file_path, encoding="utf-8") as f:
+                    text = f.read()
 
-            logger.info(f"Calculating examples which start only with tokens: {start_tokens}")
-            self._examples = LMIterator.split_list(tokenized_text, start_tokens)
-            self._examples = sorted(self._examples, key=lambda example: len(example), reverse=True)
+                logger.info(f"Tokenizing text...")
+                tokenized_text = tokenizer.encode([text], dropout_prob=dropout_prob)[0]
+                del text
 
-            logger.info("Saving features into cached file %s", cached_features_file)
-            with open(cached_features_file, "wb") as handle:
-                pickle.dump(self._examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                logger.info(f"Calculating examples which start only with tokens: {start_tokens}")
+                cur_examples = LMIterator.split_list(tokenized_text, start_tokens)
 
+                logger.info("Saving features into cached file %s", cached_features_file)
+                with open(cached_features_file, "wb") as handle:
+                    pickle.dump(cur_examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+                self._examples += cur_examples
+
+        self._examples = sorted(self._examples, key=lambda example: len(example), reverse=True)
         self._form_batches()
 
     @staticmethod
@@ -214,7 +221,7 @@ class LMIterator:
 
 
 def get_data_iterator(args, tokenizer: GitBPE, evaluate: bool = False):
-    file_path = args.eval_data_file if evaluate else args.train_data_file
+    file_paths = [args.eval_data_file] if evaluate else args.train_data_files
 
     if args.model_type == "gpt-2":
 
@@ -224,7 +231,7 @@ def get_data_iterator(args, tokenizer: GitBPE, evaluate: bool = False):
         dataset = TextDataset(
             tokenizer,
             args,
-            file_path=file_path,
+            file_paths=file_paths,
             block_size=args.block_size,
             start_tokens=tokenizer.ids_with_sep,
             dropout=0 if evaluate else args.bpe_dropout,

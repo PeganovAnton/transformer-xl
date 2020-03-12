@@ -46,7 +46,13 @@ def main():
 
     # Required parameters
     parser.add_argument(
-        "--train_data_file", default=None, type=str, required=True, help="The input training data file (a text file)."
+        "--train_data_files",
+        default=None,
+        type=str,
+        required=True,
+        nargs="+",
+        metavar="filepath",
+        help="The input training data file (a text file).",
     )
     parser.add_argument(
         "--output_dir",
