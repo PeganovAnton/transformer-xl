@@ -7,14 +7,16 @@ import torch
 import wandb
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import trange, tqdm
-from transformers import PreTrainedModel, AdamW, get_cosine_schedule_with_warmup
+from transformers import PreTrainedModel, AdamW, get_cosine_schedule_with_warmup, get_constant_schedule_with_warmup
 
 from hf_training.eval import evaluate
 from hf_training.log import timeit, logger
-from hf_training.utils import set_seed, _rotate_checkpoints, save_checkpoint
+from hf_training.utils import set_seed, save_checkpoint
 
 
-def train(args, train_data_iterator, eval_data_iterator, model: PreTrainedModel, best_eval_loss: float) -> Tuple[int, float]:
+def train(
+    args, train_data_iterator, eval_data_iterator, model: PreTrainedModel, best_eval_loss: float
+) -> Tuple[int, float]:
     """ Train the model """
     total_time_start = time.time()
 
@@ -39,13 +41,18 @@ def train(args, train_data_iterator, eval_data_iterator, model: PreTrainedModel,
     optimizer = AdamW(
         optimizer_grouped_parameters, lr=args.learning_rate / 32 * args.examples_per_step, eps=args.adam_epsilon
     )
-    # scheduler = get_linear_schedule_with_warmup(
-    #     optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total
-    # )
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer, num_warmup_steps=int(args.warmup_tokens / args.tokens_per_step), num_training_steps=t_total
-    )
-    logger.info(f"Warmup for {int(args.warmup_tokens / args.tokens_per_step)} steps")
+    if args.constant_sched:
+        scheduler = get_constant_schedule_with_warmup(
+            optimizer, num_warmup_steps=int(args.warmup_tokens / args.tokens_per_step)
+        )
+        logger.info(
+            f"Using constant LR scheduler with warmup for {int(args.warmup_tokens / args.tokens_per_step)} steps"
+        )
+    else:
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer, num_warmup_steps=int(args.warmup_tokens / args.tokens_per_step), num_training_steps=t_total
+        )
+        logger.info(f"Using cosine LR scheduler with warmup for {int(args.warmup_tokens / args.tokens_per_step)} steps")
 
     # Check if saved optimizer or scheduler states exist
     if (
