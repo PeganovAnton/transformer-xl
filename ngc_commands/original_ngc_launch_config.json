@@ -1,0 +1,14 @@
+{
+   "aceInstance": "dgx1v.16g.8.norm",
+   "aceName": "nv-us-west-2",
+   "command": "git clone https://github.com/cybertronai/transformer-xl.git original-transformer-xl-parallel && git clone https://github.com/PeganovAnton/transformer-xl-parallel.git && source transformer-xl-parallel/ngc_commands/original_ngc_command.sh",
+   "dockerImageName": "nvidia/pytorch:20.03-py3",
+   "name": "ogiginal-transformer-xl",
+   "publishedContainerPorts": [
+     6006
+   ],
+   "resultContainerMountPoint": "/result",
+   "runPolicy": {
+       "preemptClass": "RUNONCE"
+   }
+}

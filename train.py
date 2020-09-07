@@ -410,8 +410,9 @@ def main_loop():
         g.logger.info(f'Distributed initializing process group with '
                       f'{args.dist_backend}, {args.dist_url}, {util.get_world_size()}')
         dist.init_process_group(backend=args.dist_backend,
-                                init_method=args.dist_url,
-                                world_size=util.get_world_size())
+                                #init_method=args.dist_url,
+                                #world_size=util.get_world_size()
+                                )
         assert (util.get_world_size() == dist.get_world_size())
         g.logger.info(f"Distributed: success ({args.local_rank}/{dist.get_world_size()})")
 

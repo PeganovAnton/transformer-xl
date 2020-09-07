@@ -1,5 +1,4 @@
-python -m torch.distributed.launch --nproc_per_node 1 \
-    train.py \
+python train.py \
         --data ../data/wikitext-103 \
         --dataset wt103 \
         --n_layer 6 \
