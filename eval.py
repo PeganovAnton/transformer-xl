@@ -21,8 +21,6 @@ import tqdm
 
 import globals as g  # global state current run, shared between modules
 from data_utils import get_lm_corpus
-from generate import generate_text, prepare_git_context
-from search import hidden_to_softmax
 from util import unwrap_model
 from utils.exp_utils import get_logger
 
@@ -113,15 +111,14 @@ def evaluate(model, eval_iter, label: str, max_eval_steps: int = 0, reset_mems_i
                 mems = tuple()
 
             ret = model(data, target, *mems, return_hidden=True)
-            pred_hid, loss, mems = ret[0].half(), ret[1], ret[2:]
-            softmax = hidden_to_softmax(unwrap_model(model), pred_hid)
-
+            pred_hidden, loss, mems = ret[0].half(), ret[1], ret[2:]
+            pred_probas = unwrap_model(model).hidden_to_softmax(pred_hidden)
             # Loss calculation
             loss = loss.mean()
             total_loss += seq_len * loss.item()
 
             # Accuracy calculation
-            _, pred_top = torch.topk(softmax, 5)
+            _, pred_top = torch.topk(pred_probas, 5)
             true_pos = pred_top == target.unsqueeze(-1).expand_as(pred_top)
             true_top1 = true_pos[:, :, 0].sum()
             true_top5 = true_pos[:, :, :5].sum()
@@ -154,16 +151,6 @@ def evaluate(model, eval_iter, label: str, max_eval_steps: int = 0, reset_mems_i
             "total_len": total_len,
         }
     return metrics
-
-
-def sample_text(model, length: int, conditional_files: List[str] = None, temperature: float = 1.0) -> Tuple[str, str]:
-    if not conditional_files:
-        context = prepare_git_context()
-    else:
-        context = prepare_git_context(conditional_files[-1],
-                                      conditional_files[:-1] if len(conditional_files) > 1 else None)
-    text = generate_text(unwrap_model(model), context, length, num_diversity_groups=1, tokenizer=g.corpus.vocab.tokenizer, verbose=False)[0][0]
-    return context, text
 
 
 def format_log(args, metrics, split):

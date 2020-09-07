@@ -73,6 +73,27 @@ class ProjectedAdaptiveLogSoftmax(nn.Module):
 
         return logit
 
+    def _get_clusters_weights_and_biases(self):
+        weights, biases = [], []
+        for i in range(len(self.cutoffs)):
+            if self.div_val == 1:
+                l_idx, r_idx = self.cutoff_ends[i], self.cutoff_ends[i + 1]
+                weight_i = self.out_layers[0].weight[l_idx:r_idx]
+                bias_i = self.out_layers[0].bias[l_idx:r_idx]
+            else:
+                weight_i = self.out_layers[i].weight
+                bias_i = self.out_layers[i].bias
+
+            if i == 0:
+                weight_i = torch.cat(
+                    [weight_i, self.cluster_weight], dim=0)
+                bias_i = torch.cat(
+                    [bias_i, self.cluster_bias], dim=0)
+
+            weights.append(weight_i)
+            biases.append(bias_i)
+        return weights, biases
+
     def forward(self, hidden, target, keep_order=False):
         '''
             hidden :: [len*bsz x d_proj]
@@ -86,28 +107,11 @@ class ProjectedAdaptiveLogSoftmax(nn.Module):
         if self.n_clusters == 0:
             logit = self._compute_logit(hidden, self.out_layers[0].weight,
                                         self.out_layers[0].bias, self.out_projs[0])
-            nll = -F.log_softmax(logit, dim=-1) \
-                    .gather(1, target.unsqueeze(1)).squeeze(1)
+            nll = -F.log_softmax(logit, dim=-1)\
+                .gather(1, target.unsqueeze(1)).squeeze(1)
         else:
             # construct weights and biases
-            weights, biases = [], []
-            for i in range(len(self.cutoffs)):
-                if self.div_val == 1:
-                    l_idx, r_idx = self.cutoff_ends[i], self.cutoff_ends[i + 1]
-                    weight_i = self.out_layers[0].weight[l_idx:r_idx]
-                    bias_i = self.out_layers[0].bias[l_idx:r_idx]
-                else:
-                    weight_i = self.out_layers[i].weight
-                    bias_i = self.out_layers[i].bias
-
-                if i == 0:
-                    weight_i = torch.cat(
-                        [weight_i, self.cluster_weight], dim=0)
-                    bias_i = torch.cat(
-                        [bias_i, self.cluster_bias], dim=0)
-
-                weights.append(weight_i)
-                biases.append(bias_i)
+            weights, biases = self._get_clusters_weights_and_biases()
 
             head_weight, head_bias, head_proj = weights[0], biases[0], self.out_projs[0]
 
@@ -152,3 +156,35 @@ class ProjectedAdaptiveLogSoftmax(nn.Module):
                 offset += logprob_i.size(0)
 
         return nll
+
+    def softmax(self, hidden):
+        if self.n_clusters == 0:
+            logit = self._compute_logit(hidden, self.out_layers[0].weight,
+                                        self.out_laers[0].bias, self.out_projs[0])
+            probas = F.softmax(logit, dim=-1)
+        else:
+            weights, biases = self._get_clusters_weights_and_biases()
+            head_weight, head_bias, head_proj = weights[0], biases[0], self.out_projs[0]
+            head_logit = self._compute_logit(hidden, head_weight, head_bias, head_proj)
+            head_probas = F.softmax(head_logit, dim=1)
+            num_head_tokens_and_tail_clusters = head_probas.shape[1]
+            pred_head_tokens_and_tail_clusters = head_probas.argmax(dim=-1)
+            head_token_probas = head_probas[:-len(self.cutoffs)-1]
+            probas = [head_token_probas]
+            for i in range(1, len(self.cutoff_values)):
+                tail_i_mask = pred_head_tokens_and_tail_clusters \
+                              == num_head_tokens_and_tail_clusters - i
+                indices_i = tail_i_mask.nonzero()
+                hidden_i = hidden.index_select(0, tail_i_mask)
+                tail_logit_i = self._compute_logit(
+                    hidden_i, weights[i], biases[i], self.out_projs[i])
+                tail_probas_i = F.softmax(tail_logit_i, dim=1)
+                n_tokens_in_tail_i = tail_logit_i.shape[1]
+                tail_filler_i = (head_probas[-i].unsqueeze(1)
+                                 / n_tokens_in_tail_i).repeat(1, n_tokens_in_tail_i)
+                tail_probas_i = tail_filler_i.index_copy_(0, indices_i, tail_probas_i)
+                probas.append(tail_probas_i)
+            probas = torch.cat(probas, dim=1)
+        return probas
+
+

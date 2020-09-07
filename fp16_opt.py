@@ -17,6 +17,7 @@ import torch
 from torch import nn
 from torch.autograd import Variable
 from torch.nn.parameter import Parameter
+from torch.optim import Optimizer
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
 from loss_scaler import DynamicLossScaler, LossScaler
@@ -71,7 +72,7 @@ class FP16_Module(nn.Module):
         self.module.load_state_dict(state_dict, strict=strict)
 
 # TODO:  Update overflow check + downscale to use Carl's fused kernel.
-class FP16_Optimizer(object):
+class FP16_Optimizer(Optimizer):
     """
     :class:`FP16_Optimizer` is designed to wrap an existing PyTorch optimizer, 
     and manage static or dynamic loss scaling and master weights in a manner transparent to the user.

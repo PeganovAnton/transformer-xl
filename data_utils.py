@@ -291,7 +291,8 @@ class Corpus:
             test_path = os.path.join(path, 'test.txt')
             assert file_paths, f'Nothing found at {file_path_pattern}'
 
-        file_paths = natsort.natsorted(file_paths)
+        if file_paths is not None:
+            file_paths = natsort.natsorted(file_paths)
 
         # the vocab will load from file when build_vocab() is called
         self.vocab.build_vocab()
@@ -345,8 +346,8 @@ class Corpus:
                 os.path.join(path, 'wiki.valid.tokens'), ordered=True, add_eos=False)
             self.test = self.vocab.encode_file(
                 os.path.join(path, 'wiki.test.tokens'), ordered=True, add_eos=False)
-
-        self.train_files = natsort.natsorted(self.train_files)
+        if hasattr(self, 'train_files'):
+            self.train_files = natsort.natsorted(self.train_files)
 
     def get_dist_iterator(self, split: str, *args, rank: int = 0, max_rank: int = 1, skip_files: float = .0, **kwargs):
         """Get an iterator that only operates on rank'th independent subset of the data."""

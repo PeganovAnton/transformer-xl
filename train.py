@@ -21,7 +21,7 @@ from torch.nn.parallel import DistributedDataParallel
 import globals as g  # global state current run, shared between modules
 import util
 from data_utils import get_lm_corpus, LMOrderedIterator
-from eval import evaluate, sample_text
+from eval import evaluate
 from fp16_opt import FP16_Module, FP16_Optimizer
 from log import log_tb, logging_setup, log_sample, timeit
 from lr_finder import LRFinder
@@ -330,15 +330,6 @@ def evaluate_and_log(model: torch.nn.Module, eval_iter, split: str, generate_tex
     ret = evaluate(model, eval_iter, split, args.max_eval_steps, reset_mems_interval=reset_mems_interval)
     total_loss, accuracy_top1, accuracy_top5, MRR, total_len = \
         ret["total_loss"], ret["accuracy_top1"], ret["accuracy_top5"], ret["MRR_top5"], ret["total_len"]
-
-    if generate_text and util.get_global_rank() == 0:
-        # Get samples
-        _, unconditional_sample = sample_text(model, length=1000)
-        context, conditional_sample = sample_text(model, length=1000, conditional_files=["test/data/git/train.py"])
-        # Log it
-        log_sample("", unconditional_sample, "uncond")
-        log_sample(context, conditional_sample, "cond")
-
     # Switch back to the training mode
     model_to_reset.reset_length(args.tgt_len, args.ext_len, args.mem_len)
     model.train()

@@ -12,3 +12,5 @@ __pycache__
 /testdata/cache.pt
 *.tokenized
 *.bpe
+wandb/
+

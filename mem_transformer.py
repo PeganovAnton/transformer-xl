@@ -795,6 +795,10 @@ class MemTransformerLM(nn.Module):
             ret = [pred_hid] + ret
         return ret
 
+    def hidden_to_softmax(self, hidden):
+        return self.crit.softmax(hidden)
+
+
 if __name__ == '__main__':
     import argparse
 
