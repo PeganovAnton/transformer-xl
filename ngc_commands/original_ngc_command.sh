@@ -1,4 +1,4 @@
-cd transformer-xl-paralel \
+cd transformer-xl-parallel \
   && mkdir -p ../downloads ../data \
   && wget --continue https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-v1.zip \
         -O ../downloads/wikitext-103-v1.zip \
